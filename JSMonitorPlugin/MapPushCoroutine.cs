@@ -1,5 +1,7 @@
 using BepInEx.Unity.IL2CPP.Utils.Collections;
+using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -18,8 +20,8 @@ public class MapPushCoroutine : MonoBehaviour
 
     private static readonly JsonSerializerOptions _json = new()
     {
-        PropertyNamingPolicy        = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition      = JsonIgnoreCondition.WhenWritingDefault,
+        PropertyNamingPolicy        = new SnakeCaseNamingPolicy(),
+        DefaultIgnoreCondition      = JsonIgnoreCondition.WhenWritingNull,
         WriteIndented               = false
     };
 
@@ -37,12 +39,16 @@ public class MapPushCoroutine : MonoBehaviour
         {
             yield return new WaitForSeconds(interval);
 
+            // Phase 1: collect data and start HTTP request
+            System.Threading.Tasks.Task<HttpResponseMessage>? sendTask = null;
+            int playerCount = 0, castleCount = 0;
+
             try
             {
                 var snapshot = MapDataCollector.Collect();
                 if (snapshot == null)
                 {
-                    Plugin.Logger.LogDebug("[JSMonitor] Server world not ready yet — skipping push.");
+                    Plugin.Logger.LogInfo("[JSMonitor] Server world not ready yet — skipping push.");
                     continue;
                 }
 
@@ -55,19 +61,33 @@ public class MapPushCoroutine : MonoBehaviour
 
                 var json    = JsonSerializer.Serialize(payload, _json);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
-
                 var url     = Plugin.JSMonitorUrl.Value.TrimEnd('/') + "/api/v1/vrising/push";
                 var request = new HttpRequestMessage(HttpMethod.Post, url);
                 request.Headers.Add("X-API-Key", Plugin.ApiKey.Value);
                 request.Content = content;
 
-                var task   = _http.SendAsync(request);
-                task.Wait(); // blocking is fine in coroutine on background thread logic
+                sendTask    = _http.SendAsync(request);
+                playerCount = snapshot.Players.Count;
+                castleCount = snapshot.Castles.Count;
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogError($"[JSMonitor] Collect error: {ex.Message}");
+            }
 
-                if (task.Result.IsSuccessStatusCode)
-                    Plugin.Logger.LogDebug($"[JSMonitor] Pushed {snapshot.Players.Count} players, {snapshot.Castles.Count} castles.");
+            if (sendTask == null) continue;
+
+            // Phase 2: yield each frame while waiting (outside try/catch — C# requirement)
+            while (!sendTask.IsCompleted)
+                yield return null;
+
+            // Phase 3: log result
+            try
+            {
+                if (sendTask.Result.IsSuccessStatusCode)
+                    Plugin.Logger.LogInfo($"[JSMonitor] Pushed {playerCount} players, {castleCount} castles.");
                 else
-                    Plugin.Logger.LogWarning($"[JSMonitor] Push failed: HTTP {(int)task.Result.StatusCode}");
+                    Plugin.Logger.LogWarning($"[JSMonitor] Push failed: HTTP {(int)sendTask.Result.StatusCode}");
             }
             catch (System.Exception ex)
             {
@@ -89,4 +109,22 @@ public class PushPayload
 
     [JsonPropertyName("castles")]
     public List<CastleEntry> Castles { get; set; } = [];
+}
+
+// ── snake_case naming policy for net6 (SnakeCaseLower added in net8) ─────────
+
+internal sealed class SnakeCaseNamingPolicy : JsonNamingPolicy
+{
+    public override string ConvertName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        var sb = new StringBuilder();
+        for (int i = 0; i < name.Length; i++)
+        {
+            if (i > 0 && char.IsUpper(name[i]))
+                sb.Append('_');
+            sb.Append(char.ToLower(name[i]));
+        }
+        return sb.ToString();
+    }
 }

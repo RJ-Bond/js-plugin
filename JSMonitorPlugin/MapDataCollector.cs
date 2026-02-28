@@ -7,7 +7,6 @@ using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
 using System.Collections.Generic;
-using System;
 
 namespace JSMonitorPlugin;
 
@@ -16,8 +15,16 @@ namespace JSMonitorPlugin;
 /// </summary>
 public static class MapDataCollector
 {
-    static World? ServerWorld =>
-        World.s_AllWorlds.ToArray().FirstOrDefault(w => w.Name == "Server");
+    static World? ServerWorld
+    {
+        get
+        {
+            if (World.s_AllWorlds == null) return null;
+            foreach (var world in World.s_AllWorlds)
+                if (world != null && world.Name == "Server") return world;
+            return null;
+        }
+    }
 
     public static MapSnapshot? Collect()
     {
@@ -42,11 +49,8 @@ public static class MapDataCollector
         var result = new List<PlayerEntry>();
 
         var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
-        queryBuilder.AddAll(
-            ComponentType.ReadOnly<User>(),
-            ComponentType.ReadOnly<PlayerCharacterTag>()
-        );
-        var query = em.CreateEntityQuery(ref queryBuilder);
+        queryBuilder.AddAll(ComponentType.ReadOnly<User>());
+        var query = queryBuilder.Build(em);
 
         try
         {
@@ -113,11 +117,9 @@ public static class MapDataCollector
         var result = new List<CastleEntry>();
 
         var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
-        queryBuilder.AddAll(
-            ComponentType.ReadOnly<CastleHeart>(),
-            ComponentType.ReadOnly<LocalToWorld>()
-        );
-        var query = em.CreateEntityQuery(ref queryBuilder);
+        queryBuilder.AddAll(ComponentType.ReadOnly<CastleHeart>());
+        queryBuilder.AddAll(ComponentType.ReadOnly<LocalToWorld>());
+        var query = queryBuilder.Build(em);
 
         try
         {
@@ -130,13 +132,8 @@ public static class MapDataCollector
                     var heart = em.GetComponentData<CastleHeart>(entity);
                     var pos   = ltw.Position;
 
-                    // Castle tier
-                    int tier = 1;
-                    if (em.HasComponent<CastleHeartUpgrades>(entity))
-                    {
-                        var upgrades = em.GetComponentData<CastleHeartUpgrades>(entity);
-                        tier = upgrades.CurrentCastleTier + 1; // tier is 0-indexed
-                    }
+                    // CastleHeart.Level is 0-based; +1 gives display tier (1–4)
+                    int tier = (int)heart.Level + 1;
 
                     // Owner via UserOwner → User
                     var ownerName = "";
