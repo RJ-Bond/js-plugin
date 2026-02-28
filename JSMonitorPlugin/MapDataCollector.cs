@@ -180,16 +180,42 @@ public static class MapDataCollector
     }
 
     // ── Free plots ────────────────────────────────────────────────────────────
-    // Queries all CastleTerritory zone entities that have no owner (= no castle heart placed).
-    // Castle heart entities may also carry CastleTerritory, so we exclude them explicitly.
+    // Step 1: collect CastleTerritoryIndex values from CastleHeart entities (occupied zones).
+    // Step 2: query all CastleTerritory zone entities (excluding CastleHeart),
+    //         skip those whose CastleTerritoryIndex matches an occupied zone.
 
     static List<FreePlotEntry> CollectFreePlots(EntityManager em)
     {
         var result = new List<FreePlotEntry>();
 
+        // Collect occupied territory indices via CastleHeart entities
+        var occupiedIndices = new HashSet<int>();
+        {
+            var heartQb = new EntityQueryBuilder(Allocator.Temp);
+            heartQb.AddAll(ComponentType.ReadOnly<CastleHeart>());
+            var heartQ = heartQb.Build(em);
+            try
+            {
+                var heartEntities = heartQ.ToEntityArray(Allocator.Temp);
+                foreach (var e in heartEntities)
+                {
+                    try
+                    {
+                        if (em.HasComponent<CastleTerritory>(e))
+                            occupiedIndices.Add(em.GetComponentData<CastleTerritory>(e).CastleTerritoryIndex);
+                    }
+                    catch { }
+                }
+                heartEntities.Dispose();
+            }
+            finally { heartQ.Dispose(); heartQb.Dispose(); }
+        }
+
+        // Query territory zone entities (CastleHeart entities excluded by AddNone)
         var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
         queryBuilder.AddAll(ComponentType.ReadOnly<CastleTerritory>());
         queryBuilder.AddAll(ComponentType.ReadOnly<LocalToWorld>());
+        queryBuilder.AddNone(ComponentType.ReadOnly<CastleHeart>());
         var query = queryBuilder.Build(em);
 
         try
@@ -199,11 +225,8 @@ public static class MapDataCollector
             {
                 try
                 {
-                    // Castle heart entities may also carry CastleTerritory — skip them
-                    if (em.HasComponent<CastleHeart>(entity)) continue;
-
-                    // Territory is occupied when a player claims it (UserOwner is added)
-                    if (em.HasComponent<UserOwner>(entity)) continue;
+                    var ct = em.GetComponentData<CastleTerritory>(entity);
+                    if (occupiedIndices.Contains(ct.CastleTerritoryIndex)) continue;
 
                     var ltw = em.GetComponentData<LocalToWorld>(entity);
                     result.Add(new FreePlotEntry { X = ltw.Position.x, Z = ltw.Position.z });
@@ -218,6 +241,7 @@ public static class MapDataCollector
             queryBuilder.Dispose();
         }
 
+        Plugin.Logger.LogInfo($"[JSMonitor] FreePlots: {result.Count} free, {occupiedIndices.Count} occupied");
         return result;
     }
 }
