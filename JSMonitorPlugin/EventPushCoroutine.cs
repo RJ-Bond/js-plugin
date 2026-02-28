@@ -18,6 +18,15 @@ public class EventPushCoroutine : MonoBehaviour
 {
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
+    // Discord's CA may not be trusted on the game server OS; bypass cert validation for that host only.
+    private static readonly HttpClient _discordHttp = new(
+        new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+        })
+    { Timeout = TimeSpan.FromSeconds(10) };
+
     private static readonly JsonSerializerOptions _json = new()
     {
         PropertyNamingPolicy   = new SnakeCaseNamingPolicy(),
@@ -57,7 +66,7 @@ public class EventPushCoroutine : MonoBehaviour
                         var payload = new DiscordWebhookPayload { Embeds = [embed] };
                         var body    = JsonSerializer.Serialize(payload, _json);
                         var content = new StringContent(body, Encoding.UTF8, "application/json");
-                        discordTask = _http.PostAsync(discordUrl, content);
+                        discordTask = _discordHttp.PostAsync(discordUrl, content);
                     }
                     catch (Exception ex)
                     {
