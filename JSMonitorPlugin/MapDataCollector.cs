@@ -6,6 +6,7 @@ using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
+using System;
 using System.Collections.Generic;
 
 namespace JSMonitorPlugin;
@@ -180,68 +181,69 @@ public static class MapDataCollector
     }
 
     // ── Free plots ────────────────────────────────────────────────────────────
-    // Step 1: collect CastleTerritoryIndex values from CastleHeart entities (occupied zones).
-    // Step 2: query all CastleTerritory zone entities (excluding CastleHeart),
-    //         skip those whose CastleTerritoryIndex matches an occupied zone.
+    // Diagnostic version: logs ECS component layout to find the correct query approach.
 
     static List<FreePlotEntry> CollectFreePlots(EntityManager em)
     {
         var result = new List<FreePlotEntry>();
 
-        // Collect occupied territory indices via CastleHeart entities
-        var occupiedIndices = new HashSet<int>();
+        // ── Diagnostic 1: all CastleTerritory entities ────────────────────
         {
-            var heartQb = new EntityQueryBuilder(Allocator.Temp);
-            heartQb.AddAll(ComponentType.ReadOnly<CastleHeart>());
-            var heartQ = heartQb.Build(em);
+            var qb = new EntityQueryBuilder(Allocator.Temp);
+            qb.AddAll(ComponentType.ReadOnly<CastleTerritory>());
+            var q = qb.Build(em);
             try
             {
-                var heartEntities = heartQ.ToEntityArray(Allocator.Temp);
-                foreach (var e in heartEntities)
+                var entities = q.ToEntityArray(Allocator.Temp);
+                int withLtw = 0, withHeart = 0, withUserOwner = 0;
+                foreach (var e in entities)
+                {
+                    if (em.HasComponent<LocalToWorld>(e)) withLtw++;
+                    if (em.HasComponent<CastleHeart>(e))  withHeart++;
+                    if (em.HasComponent<UserOwner>(e))    withUserOwner++;
+                }
+                Plugin.Logger.LogInfo(
+                    $"[JSMonitor] [diag] CastleTerritory entities: total={entities.Length} " +
+                    $"withLtw={withLtw} withHeart={withHeart} withUserOwner={withUserOwner}");
+                entities.Dispose();
+            }
+            finally { q.Dispose(); qb.Dispose(); }
+        }
+
+        // ── Diagnostic 2: CastleHeart entities ────────────────────────────
+        {
+            var qb = new EntityQueryBuilder(Allocator.Temp);
+            qb.AddAll(ComponentType.ReadOnly<CastleHeart>());
+            var q = qb.Build(em);
+            try
+            {
+                var entities = q.ToEntityArray(Allocator.Temp);
+                int withCT = 0;
+                foreach (var e in entities)
+                    if (em.HasComponent<CastleTerritory>(e)) withCT++;
+                Plugin.Logger.LogInfo(
+                    $"[JSMonitor] [diag] CastleHeart entities: {entities.Length} withCastleTerritory={withCT}");
+
+                if (entities.Length > 0)
                 {
                     try
                     {
-                        if (em.HasComponent<CastleTerritory>(e))
-                            occupiedIndices.Add(em.GetComponentData<CastleTerritory>(e).CastleTerritoryIndex);
+                        var h = em.GetComponentData<CastleHeart>(entities[0]);
+                        Plugin.Logger.LogInfo(
+                            $"[JSMonitor] [diag] CastleHeart[0] Level={h.Level} " +
+                            $"TerritoryIndex={h.CastleTerritoryIndex}");
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Plugin.Logger.LogWarning($"[JSMonitor] [diag] CastleHeart read error: {ex.Message}");
+                    }
                 }
-                heartEntities.Dispose();
+                entities.Dispose();
             }
-            finally { heartQ.Dispose(); heartQb.Dispose(); }
+            finally { q.Dispose(); qb.Dispose(); }
         }
 
-        // Query territory zone entities (CastleHeart entities excluded by AddNone)
-        var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
-        queryBuilder.AddAll(ComponentType.ReadOnly<CastleTerritory>());
-        queryBuilder.AddAll(ComponentType.ReadOnly<LocalToWorld>());
-        queryBuilder.AddNone(ComponentType.ReadOnly<CastleHeart>());
-        var query = queryBuilder.Build(em);
-
-        try
-        {
-            var entities = query.ToEntityArray(Allocator.Temp);
-            foreach (var entity in entities)
-            {
-                try
-                {
-                    var ct = em.GetComponentData<CastleTerritory>(entity);
-                    if (occupiedIndices.Contains(ct.CastleTerritoryIndex)) continue;
-
-                    var ltw = em.GetComponentData<LocalToWorld>(entity);
-                    result.Add(new FreePlotEntry { X = ltw.Position.x, Z = ltw.Position.z });
-                }
-                catch { /* skip */ }
-            }
-            entities.Dispose();
-        }
-        finally
-        {
-            query.Dispose();
-            queryBuilder.Dispose();
-        }
-
-        Plugin.Logger.LogInfo($"[JSMonitor] FreePlots: {result.Count} free, {occupiedIndices.Count} occupied");
+        Plugin.Logger.LogInfo($"[JSMonitor] FreePlots: {result.Count} free");
         return result;
     }
 }
