@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>JSMonitorPlugin</AssemblyName>
+    <Description>V Rising BepInEx plugin — sends live map data (players, castles) to JSMonitor</Description>
+    <Version>1.0.0</Version>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>JSMonitorPlugin</RootNamespace>
+    <PackageId>JSMonitorPlugin</PackageId>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <BepInExPluginGuid>rjbond.jsmonitor</BepInExPluginGuid>
+    <BepInExPluginName>JSMonitorPlugin</BepInExPluginName>
+    <BepInExPluginVersion>1.0.0</BepInExPluginVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.733" IncludeAssets="compile" />
+    <PackageReference Include="BepInEx.Core"         Version="6.0.0-be.733" IncludeAssets="compile" />
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
+    <PackageReference Include="VRising.Unhollowed.Client" Version="1.1.*" />
+  </ItemGroup>
+
+  <!-- Copy DLL to server plugins after build (adjust path as needed) -->
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Exec Command="copy &quot;$(TargetPath)&quot; &quot;C:\VRisingDedicatedServer\BepInEx\plugins&quot;" ContinueOnError="true" />
+  </Target>
+</Project>
