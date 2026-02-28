@@ -91,11 +91,12 @@ public static class MapDataCollector
 
                     result.Add(new PlayerEntry
                     {
-                        Name   = user.CharacterName.Value,
-                        Clan   = clanName,
-                        X      = pos.x,
-                        Z      = pos.z,
-                        Health = health
+                        Name    = user.CharacterName.Value,
+                        Clan    = clanName,
+                        X       = pos.x,
+                        Z       = pos.z,
+                        Health  = health,
+                        IsAdmin = user.IsAdmin
                     });
                 }
                 catch { /* skip this entity */ }
@@ -232,11 +233,12 @@ public class MapSnapshot
 
 public class PlayerEntry
 {
-    public string Name   { get; set; } = "";
-    public string Clan   { get; set; } = "";
-    public float  X      { get; set; }
-    public float  Z      { get; set; }
-    public float  Health { get; set; }
+    public string Name    { get; set; } = "";
+    public string Clan    { get; set; } = "";
+    public float  X       { get; set; }
+    public float  Z       { get; set; }
+    public float  Health  { get; set; }
+    public bool   IsAdmin { get; set; }
 }
 
 public class CastleEntry
