@@ -35,8 +35,9 @@ public static class MapDataCollector
 
         var snapshot = new MapSnapshot
         {
-            Players = CollectPlayers(em),
-            Castles = CollectCastles(em, world)
+            Players   = CollectPlayers(em),
+            Castles   = CollectCastles(em, world),
+            FreePlots = CollectFreePlots(em)
         };
 
         return snapshot;
@@ -176,14 +177,57 @@ public static class MapDataCollector
 
         return result;
     }
+
+    // ── Free plots ────────────────────────────────────────────────────────────
+    // Queries all CastleTerritory zone entities that have no owner (= no castle heart placed).
+    // Castle heart entities may also carry CastleTerritory, so we exclude them explicitly.
+
+    static List<FreePlotEntry> CollectFreePlots(EntityManager em)
+    {
+        var result = new List<FreePlotEntry>();
+
+        var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
+        queryBuilder.AddAll(ComponentType.ReadOnly<CastleTerritory>());
+        queryBuilder.AddAll(ComponentType.ReadOnly<LocalToWorld>());
+        var query = queryBuilder.Build(em);
+
+        try
+        {
+            var entities = query.ToEntityArray(Allocator.Temp);
+            foreach (var entity in entities)
+            {
+                try
+                {
+                    // Castle heart entities may also carry CastleTerritory — skip them
+                    if (em.HasComponent<CastleHeart>(entity)) continue;
+
+                    // Territory is occupied when a player claims it (UserOwner is added)
+                    if (em.HasComponent<UserOwner>(entity)) continue;
+
+                    var ltw = em.GetComponentData<LocalToWorld>(entity);
+                    result.Add(new FreePlotEntry { X = ltw.Position.x, Z = ltw.Position.z });
+                }
+                catch { /* skip */ }
+            }
+            entities.Dispose();
+        }
+        finally
+        {
+            query.Dispose();
+            queryBuilder.Dispose();
+        }
+
+        return result;
+    }
 }
 
 // ── Data models ───────────────────────────────────────────────────────────────
 
 public class MapSnapshot
 {
-    public List<PlayerEntry> Players { get; set; } = [];
-    public List<CastleEntry> Castles { get; set; } = [];
+    public List<PlayerEntry>   Players   { get; set; } = [];
+    public List<CastleEntry>   Castles   { get; set; } = [];
+    public List<FreePlotEntry> FreePlots { get; set; } = [];
 }
 
 public class PlayerEntry
@@ -202,4 +246,10 @@ public class CastleEntry
     public float  X     { get; set; }
     public float  Z     { get; set; }
     public int    Tier  { get; set; }
+}
+
+public class FreePlotEntry
+{
+    public float X { get; set; }
+    public float Z { get; set; }
 }

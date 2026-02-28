@@ -41,7 +41,7 @@ public class MapPushCoroutine : MonoBehaviour
 
             // Phase 1: collect data and start HTTP request
             System.Threading.Tasks.Task<HttpResponseMessage>? sendTask = null;
-            int playerCount = 0, castleCount = 0;
+            int playerCount = 0, castleCount = 0, freePlotCount = 0;
 
             try
             {
@@ -54,9 +54,10 @@ public class MapPushCoroutine : MonoBehaviour
 
                 var payload = new PushPayload
                 {
-                    ServerId = Plugin.ServerId.Value,
-                    Players  = snapshot.Players,
-                    Castles  = snapshot.Castles
+                    ServerId  = Plugin.ServerId.Value,
+                    Players   = snapshot.Players,
+                    Castles   = snapshot.Castles,
+                    FreePlots = snapshot.FreePlots
                 };
 
                 var json    = JsonSerializer.Serialize(payload, _json);
@@ -66,9 +67,10 @@ public class MapPushCoroutine : MonoBehaviour
                 request.Headers.Add("X-API-Key", Plugin.ApiKey.Value);
                 request.Content = content;
 
-                sendTask    = _http.SendAsync(request);
-                playerCount = snapshot.Players.Count;
-                castleCount = snapshot.Castles.Count;
+                sendTask      = _http.SendAsync(request);
+                playerCount   = snapshot.Players.Count;
+                castleCount   = snapshot.Castles.Count;
+                freePlotCount = snapshot.FreePlots.Count;
             }
             catch (System.Exception ex)
             {
@@ -85,7 +87,7 @@ public class MapPushCoroutine : MonoBehaviour
             try
             {
                 if (sendTask.Result.IsSuccessStatusCode)
-                    Plugin.Logger.LogInfo($"[JSMonitor] Pushed {playerCount} players, {castleCount} castles.");
+                    Plugin.Logger.LogInfo($"[JSMonitor] Pushed {playerCount} players, {castleCount} castles, {freePlotCount} free plots.");
                 else
                     Plugin.Logger.LogWarning($"[JSMonitor] Push failed: HTTP {(int)sendTask.Result.StatusCode}");
             }
@@ -109,6 +111,9 @@ public class PushPayload
 
     [JsonPropertyName("castles")]
     public List<CastleEntry> Castles { get; set; } = [];
+
+    [JsonPropertyName("free_plots")]
+    public List<FreePlotEntry> FreePlots { get; set; } = [];
 }
 
 // ── snake_case naming policy for net6 (SnakeCaseLower added in net8) ─────────
