@@ -25,7 +25,7 @@ public class EventPushCoroutine : MonoBehaviour
             ServerCertificateCustomValidationCallback =
                 HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
         })
-    { Timeout = TimeSpan.FromSeconds(10) };
+    { Timeout = TimeSpan.FromSeconds(30) };
 
     private static readonly JsonSerializerOptions _json = new()
     {

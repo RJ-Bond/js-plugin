@@ -181,10 +181,79 @@ public static class MapDataCollector
     }
 
     // ── Free plots ────────────────────────────────────────────────────────────
-    // CastleTerritory entities have no LocalToWorld; position sourcing is TBD.
-    // Returns empty list for now — slot reserved for future implementation.
+    // A "free plot" = CastleTerritory with no associated CastleHeart.
+    // Territory entities don't have LocalToWorld, so we compute the center
+    // by averaging the tile coords from the CastleTerritoryBlocks buffer.
 
-    static List<FreePlotEntry> CollectFreePlots(EntityManager em) => [];
+    static List<FreePlotEntry> CollectFreePlots(EntityManager em)
+    {
+        var result = new List<FreePlotEntry>();
+
+        // Step 1: collect territory indices that are already claimed.
+        var claimedIndices = new HashSet<int>();
+        {
+            var qb = new EntityQueryBuilder(Allocator.Temp);
+            qb.AddAll(ComponentType.ReadOnly<CastleHeart>());
+            var query = qb.Build(em);
+            try
+            {
+                var entities = query.ToEntityArray(Allocator.Temp);
+                foreach (var e in entities)
+                {
+                    try
+                    {
+                        var heart = em.GetComponentData<CastleHeart>(e);
+                        claimedIndices.Add(heart.CastleTerritoryIndex);
+                    }
+                    catch { }
+                }
+                entities.Dispose();
+            }
+            finally { query.Dispose(); qb.Dispose(); }
+        }
+
+        // Step 2: iterate territory entities, skip claimed ones.
+        {
+            var qb = new EntityQueryBuilder(Allocator.Temp);
+            qb.AddAll(ComponentType.ReadOnly<CastleTerritory>());
+            var query = qb.Build(em);
+            try
+            {
+                var entities = query.ToEntityArray(Allocator.Temp);
+                foreach (var e in entities)
+                {
+                    try
+                    {
+                        var territory = em.GetComponentData<CastleTerritory>(e);
+                        if (claimedIndices.Contains(territory.CastleTerritoryIndex)) continue;
+
+                        // Compute center from tile-block buffer.
+                        if (!em.HasBuffer<CastleTerritoryBlocks>(e)) continue;
+                        var blocks = em.GetBuffer<CastleTerritoryBlocks>(e);
+                        if (blocks.Length == 0) continue;
+
+                        float sumX = 0f, sumZ = 0f;
+                        for (int i = 0; i < blocks.Length; i++)
+                        {
+                            sumX += blocks[i].BlockCoordinate.x;
+                            sumZ += blocks[i].BlockCoordinate.y; // tile Y → world Z
+                        }
+
+                        result.Add(new FreePlotEntry
+                        {
+                            X = sumX / blocks.Length,
+                            Z = sumZ / blocks.Length,
+                        });
+                    }
+                    catch { }
+                }
+                entities.Dispose();
+            }
+            finally { query.Dispose(); qb.Dispose(); }
+        }
+
+        return result;
+    }
 }
 
 // ── Data models ───────────────────────────────────────────────────────────────

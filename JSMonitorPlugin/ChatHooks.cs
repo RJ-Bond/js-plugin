@@ -156,6 +156,7 @@ public static class ChatHooks
                         if (!em.Exists(ev.UserEntity)) continue;
                         var user       = em.GetComponentData<User>(ev.UserEntity);
                         var playerName = user.CharacterName.Value;
+                        if (string.IsNullOrEmpty(playerName)) continue;
                         var isConnect  = ev.Type == UserConnectionChangedType.Connected;
                         var ts         = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
