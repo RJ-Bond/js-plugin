@@ -189,8 +189,9 @@ public static class MapDataCollector
     {
         var result = new List<FreePlotEntry>();
 
-        // Step 1: collect territory indices that are already claimed.
-        var claimedIndices = new HashSet<int>();
+        // Step 1: collect the territory Entity refs that already have a CastleHeart.
+        // CastleHeart.CastleTerritoryEntity points directly to the territory entity.
+        var claimedEntities = new HashSet<Entity>();
         {
             var qb = new EntityQueryBuilder(Allocator.Temp);
             qb.AddAll(ComponentType.ReadOnly<CastleHeart>());
@@ -203,7 +204,7 @@ public static class MapDataCollector
                     try
                     {
                         var heart = em.GetComponentData<CastleHeart>(e);
-                        claimedIndices.Add(heart.CastleTerritoryIndex);
+                        claimedEntities.Add(heart.CastleTerritoryEntity);
                     }
                     catch { }
                 }
@@ -224,8 +225,7 @@ public static class MapDataCollector
                 {
                     try
                     {
-                        var territory = em.GetComponentData<CastleTerritory>(e);
-                        if (claimedIndices.Contains(territory.CastleTerritoryIndex)) continue;
+                        if (claimedEntities.Contains(e)) continue;
 
                         // Compute center from tile-block buffer.
                         if (!em.HasBuffer<CastleTerritoryBlocks>(e)) continue;
