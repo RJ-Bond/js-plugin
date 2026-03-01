@@ -16,7 +16,14 @@ namespace JSMonitorPlugin;
 /// </summary>
 public class MapPushCoroutine : MonoBehaviour
 {
-    private static readonly HttpClient _http = new() { Timeout = System.TimeSpan.FromSeconds(10) };
+    // Bypass cert validation so the plugin can talk to self-signed / Let's Encrypt certs alike.
+    private static readonly HttpClient _http = new(
+        new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+        })
+    { Timeout = System.TimeSpan.FromSeconds(10) };
 
     private static readonly JsonSerializerOptions _json = new()
     {

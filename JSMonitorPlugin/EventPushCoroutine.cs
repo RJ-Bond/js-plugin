@@ -16,7 +16,14 @@ namespace JSMonitorPlugin;
 /// </summary>
 public class EventPushCoroutine : MonoBehaviour
 {
-    private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
+    // Bypass cert validation so the plugin can talk to self-signed / Let's Encrypt certs alike.
+    private static readonly HttpClient _http = new(
+        new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+        })
+    { Timeout = TimeSpan.FromSeconds(10) };
 
     // Discord's CA may not be trusted on the game server OS; bypass cert validation for that host only.
     private static readonly HttpClient _discordHttp = new(
