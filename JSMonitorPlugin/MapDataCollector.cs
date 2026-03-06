@@ -259,9 +259,7 @@ public static class MapDataCollector
         var result = new List<FreePlotEntry>();
 
         // Step 1: collect territory entities that are already claimed.
-        // Also build a reverse map: territory entity → heart world position (for diagnostics).
         var claimedEntities = new HashSet<Entity>();
-        var territoryToHeartPos = new Dictionary<Entity, Unity.Mathematics.float3>();
         {
             var qb = new EntityQueryBuilder(Allocator.Temp);
             qb.AddAll(ComponentType.ReadOnly<CastleHeart>());
@@ -274,10 +272,7 @@ public static class MapDataCollector
                     try
                     {
                         var heart = em.GetComponentData<CastleHeart>(e);
-                        var terrEntity = heart.CastleTerritoryEntity;
-                        claimedEntities.Add(terrEntity);
-                        if (em.HasComponent<LocalToWorld>(e) && !territoryToHeartPos.ContainsKey(terrEntity))
-                            territoryToHeartPos[terrEntity] = em.GetComponentData<LocalToWorld>(e).Position;
+                        claimedEntities.Add(heart.CastleTerritoryEntity);
                     }
                     catch { }
                 }
@@ -286,16 +281,13 @@ public static class MapDataCollector
             finally { q.Dispose(); qb.Dispose(); }
         }
 
-        float xMin = Plugin.WorldXMin.Value;
-        float xMax = Plugin.WorldXMax.Value;
-        float zMin = Plugin.WorldZMin.Value;
-        float zMax = Plugin.WorldZMax.Value;
-
-        float scale = Plugin.BlockWorldSize.Value;
-
-        // Diagnostic: log CastleHeart world pos vs territory centroid to validate formula.
-        // Only runs once (first claimed territory found).
-        bool diagLogged = false;
+        float xMin    = Plugin.WorldXMin.Value;
+        float xMax    = Plugin.WorldXMax.Value;
+        float zMin    = Plugin.WorldZMin.Value;
+        float zMax    = Plugin.WorldZMax.Value;
+        float scale   = Plugin.BlockWorldSize.Value;
+        float blockX0 = Plugin.BlockXOrigin.Value;
+        float blockZ0 = Plugin.BlockZOrigin.Value;
 
         // Step 2: iterate all territory entities, skip claimed, compute world centroid.
         var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
@@ -309,7 +301,7 @@ public static class MapDataCollector
             {
                 try
                 {
-                    bool isClaimed = claimedEntities.Contains(entity);
+                    if (claimedEntities.Contains(entity)) continue;
 
                     if (!em.HasBuffer<CastleTerritoryBlocks>(entity)) continue;
                     var blocks = em.GetBuffer<CastleTerritoryBlocks>(entity);
@@ -318,21 +310,11 @@ public static class MapDataCollector
                     float sumX = 0f, sumZ = 0f;
                     for (int i = 0; i < blocks.Length; i++)
                     {
-                        sumX += blocks[i].BlockCoordinate.x * scale + xMin;
-                        sumZ += zMax - blocks[i].BlockCoordinate.y * scale;
+                        sumX += blocks[i].BlockCoordinate.x * scale + blockX0;
+                        sumZ += blockZ0 - blocks[i].BlockCoordinate.y * scale;
                     }
                     float cx = sumX / blocks.Length;
                     float cz = sumZ / blocks.Length;
-
-                    // Diagnostic: for first claimed territory, compare computed centroid
-                    // with the actual CastleHeart world position (looked up by CastleTerritoryEntity).
-                    if (!diagLogged && isClaimed && territoryToHeartPos.TryGetValue(entity, out var hp))
-                    {
-                        diagLogged = true;
-                        Plugin.Logger.LogInfo($"[JSMonitor][FreePlot] Diag: centroid=({cx:F0},{cz:F0}) heartPos=({hp.x:F0},{hp.z:F0}) blocks={blocks.Length} rawBx={blocks[0].BlockCoordinate.x} rawBy={blocks[0].BlockCoordinate.y}");
-                    }
-
-                    if (isClaimed) continue;
 
                     // Bounds filter — skip territories outside visible map area.
                     if (cx < xMin || cx > xMax || cz < zMin || cz > zMax) continue;

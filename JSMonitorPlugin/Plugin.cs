@@ -13,7 +13,8 @@ namespace JSMonitorPlugin;
 [BepInPlugin(MyPluginInfo.PLUGIN_GUID, MyPluginInfo.PLUGIN_NAME, MyPluginInfo.PLUGIN_VERSION)]
 public class Plugin : BasePlugin
 {
-    public static ManualLogSource Logger { get; private set; } = null!;
+    public static Plugin          Instance { get; private set; } = null!;
+    public static ManualLogSource Logger   { get; private set; } = null!;
 
     // ── BepInEx config ────────────────────────────────────────────────────
     public static ConfigEntry<string> JSMonitorUrl      { get; private set; } = null!;
@@ -21,6 +22,17 @@ public class Plugin : BasePlugin
     public static ConfigEntry<int>    ServerId          { get; private set; } = null!;
     public static ConfigEntry<int>    UpdateInterval    { get; private set; } = null!;
     public static ConfigEntry<string> DiscordWebhookUrl { get; private set; } = null!;
+    // World bounds — used to calculate and filter free territory positions.
+    public static ConfigEntry<float> WorldXMin      { get; private set; } = null!;
+    public static ConfigEntry<float> WorldXMax      { get; private set; } = null!;
+    public static ConfigEntry<float> WorldZMin      { get; private set; } = null!;
+    public static ConfigEntry<float> WorldZMax      { get; private set; } = null!;
+    public static ConfigEntry<float> BlockWorldSize { get; private set; } = null!;
+    // Block tile coordinate origin in world space (derived from game engine tile grid).
+    public static ConfigEntry<float> BlockXOrigin   { get; private set; } = null!;
+    public static ConfigEntry<float> BlockZOrigin   { get; private set; } = null!;
+    // Diagnostic: dump component types of territory entities on next push (auto-resets).
+    public static ConfigEntry<bool>  DumpOnNextPush { get; private set; } = null!;
 
     private Harmony?            _harmony;
     private MapPushCoroutine?   _coroutine;
@@ -28,13 +40,22 @@ public class Plugin : BasePlugin
 
     public override void Load()
     {
-        Logger = Log;
+        Instance = this;
+        Logger   = Log;
 
-        JSMonitorUrl      = Config.Bind("General", "JSMonitorUrl",      "",  "Full URL of your JSMonitor instance (e.g. https://example.com)");
-        ApiKey            = Config.Bind("General", "ApiKey",            "",  "API token from your JSMonitor profile (Settings → API Token)");
-        ServerId          = Config.Bind("General", "ServerId",          0,   "Server ID in JSMonitor (visible in the admin panel)");
-        UpdateInterval    = Config.Bind("General", "UpdateInterval",    60,  "How often to push map data, in seconds (min 10)");
-        DiscordWebhookUrl = Config.Bind("Discord", "WebhookUrl",        "",  "Discord webhook URL for chat and connection events (leave empty to disable)");
+        JSMonitorUrl      = Config.Bind("General", "JSMonitorUrl",      "",    "Full URL of your JSMonitor instance (e.g. https://example.com)");
+        ApiKey            = Config.Bind("General", "ApiKey",            "",    "API token from your JSMonitor profile (Settings → API Token)");
+        ServerId          = Config.Bind("General", "ServerId",          0,     "Server ID in JSMonitor (visible in the admin panel)");
+        UpdateInterval    = Config.Bind("General", "UpdateInterval",    60,    "How often to push map data, in seconds (min 10)");
+        DiscordWebhookUrl = Config.Bind("Discord", "WebhookUrl",        "",     "Discord webhook URL for chat and connection events (leave empty to disable)");
+        WorldXMin         = Config.Bind("Map", "WorldXMin",         -2880f,  "Western world boundary.");
+        WorldXMax         = Config.Bind("Map", "WorldXMax",           160f,  "Eastern world boundary.");
+        WorldZMin         = Config.Bind("Map", "WorldZMin",         -1700f,  "Southern world boundary. Default -1700 excludes far-south territories outside the visible map.");
+        WorldZMax         = Config.Bind("Map", "WorldZMax",           640f,  "Northern world boundary.");
+        BlockWorldSize    = Config.Bind("Map", "BlockWorldSize",        5f,     "Tile size in world units.");
+        BlockXOrigin      = Config.Bind("Map", "BlockXOrigin",      -3221f,  "World X at block tile X=0. Do not change unless game updates.");
+        BlockZOrigin      = Config.Bind("Map", "BlockZOrigin",       -221f,  "World Z at block tile Y=0. Do not change unless game updates.");
+        DumpOnNextPush    = Config.Bind("Debug", "DumpOnNextPush",   false,  "Set true to dump ECS component types of territory entities on next push (auto-resets).");
 
         if (string.IsNullOrWhiteSpace(JSMonitorUrl.Value) || string.IsNullOrWhiteSpace(ApiKey.Value) || ServerId.Value <= 0)
         {

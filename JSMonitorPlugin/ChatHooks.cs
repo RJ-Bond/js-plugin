@@ -102,7 +102,9 @@ public static class ChatHooks
                 {
                     try
                     {
-                        var ev = em.GetComponentData<ChatMessageServerEvent>(entity);
+                        var ev      = em.GetComponentData<ChatMessageServerEvent>(entity);
+                        var msgText = ev.MessageText.Value ?? "";
+
                         var channel = MapChannel(ev.MessageType);
                         if (string.IsNullOrEmpty(channel)) continue;   // skip System/Lore
 
@@ -111,10 +113,10 @@ public static class ChatHooks
 
                         PendingEvents.Enqueue(new ServerEvent(
                             "chat", playerName, channel,
-                            ev.MessageText.Value, ts));
+                            msgText, ts));
 
                         Plugin.Logger.LogInfo(
-                            $"[JSMonitor] Chat [{channel}] {playerName}: {ev.MessageText.Value}");
+                            $"[JSMonitor] Chat [{channel}] {playerName}: {msgText}");
                     }
                     catch { }
                 }
