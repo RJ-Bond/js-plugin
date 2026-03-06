@@ -259,8 +259,9 @@ public static class MapDataCollector
         var result = new List<FreePlotEntry>();
 
         // Step 1: collect territory entities that are already claimed.
-        // CastleHeart.CastleTerritoryEntity points to the territory entity it occupies.
+        // Also build a reverse map: territory entity → heart world position (for diagnostics).
         var claimedEntities = new HashSet<Entity>();
+        var territoryToHeartPos = new Dictionary<Entity, Unity.Mathematics.float3>();
         {
             var qb = new EntityQueryBuilder(Allocator.Temp);
             qb.AddAll(ComponentType.ReadOnly<CastleHeart>());
@@ -273,7 +274,10 @@ public static class MapDataCollector
                     try
                     {
                         var heart = em.GetComponentData<CastleHeart>(e);
-                        claimedEntities.Add(heart.CastleTerritoryEntity);
+                        var terrEntity = heart.CastleTerritoryEntity;
+                        claimedEntities.Add(terrEntity);
+                        if (em.HasComponent<LocalToWorld>(e) && !territoryToHeartPos.ContainsKey(terrEntity))
+                            territoryToHeartPos[terrEntity] = em.GetComponentData<LocalToWorld>(e).Position;
                     }
                     catch { }
                 }
@@ -321,20 +325,11 @@ public static class MapDataCollector
                     float cz = sumZ / blocks.Length;
 
                     // Diagnostic: for first claimed territory, compare computed centroid
-                    // with the actual CastleHeart world position.
-                    if (!diagLogged && isClaimed)
+                    // with the actual CastleHeart world position (looked up by CastleTerritoryEntity).
+                    if (!diagLogged && isClaimed && territoryToHeartPos.TryGetValue(entity, out var hp))
                     {
                         diagLogged = true;
-                        try
-                        {
-                            var ct = em.GetComponentData<CastleTerritory>(entity);
-                            if (em.Exists(ct.CastleHeart) && em.HasComponent<LocalToWorld>(ct.CastleHeart))
-                            {
-                                var heartPos = em.GetComponentData<LocalToWorld>(ct.CastleHeart).Position;
-                                Plugin.Logger.LogInfo($"[JSMonitor][FreePlot] Diag: territory centroid=({cx:F0},{cz:F0}) heartPos=({heartPos.x:F0},{heartPos.z:F0}) blocks={blocks.Length}");
-                            }
-                        }
-                        catch { }
+                        Plugin.Logger.LogInfo($"[JSMonitor][FreePlot] Diag: centroid=({cx:F0},{cz:F0}) heartPos=({hp.x:F0},{hp.z:F0}) blocks={blocks.Length} rawBx={blocks[0].BlockCoordinate.x} rawBy={blocks[0].BlockCoordinate.y}");
                     }
 
                     if (isClaimed) continue;
