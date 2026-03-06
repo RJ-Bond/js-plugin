@@ -282,11 +282,16 @@ public static class MapDataCollector
             finally { q.Dispose(); qb.Dispose(); }
         }
 
-        float xMin  = Plugin.WorldXMin.Value;
-        float xMax  = Plugin.WorldXMax.Value;
-        float zMin  = Plugin.WorldZMin.Value;
-        float zMax  = Plugin.WorldZMax.Value;
+        float xMin = Plugin.WorldXMin.Value;
+        float xMax = Plugin.WorldXMax.Value;
+        float zMin = Plugin.WorldZMin.Value;
+        float zMax = Plugin.WorldZMax.Value;
+
         float scale = Plugin.BlockWorldSize.Value;
+
+        // Diagnostic: log CastleHeart world pos vs territory centroid to validate formula.
+        // Only runs once (first claimed territory found).
+        bool diagLogged = false;
 
         // Step 2: iterate all territory entities, skip claimed, compute world centroid.
         var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
@@ -300,14 +305,12 @@ public static class MapDataCollector
             {
                 try
                 {
-                    if (claimedEntities.Contains(entity)) continue;
+                    bool isClaimed = claimedEntities.Contains(entity);
 
                     if (!em.HasBuffer<CastleTerritoryBlocks>(entity)) continue;
                     var blocks = em.GetBuffer<CastleTerritoryBlocks>(entity);
                     if (blocks.Length == 0) continue;
 
-                    // Convert block tile coords → world coords, then average for centroid.
-                    // block.x = east-west tile index, block.y = south-north tile index (inverted Z).
                     float sumX = 0f, sumZ = 0f;
                     for (int i = 0; i < blocks.Length; i++)
                     {
@@ -316,6 +319,25 @@ public static class MapDataCollector
                     }
                     float cx = sumX / blocks.Length;
                     float cz = sumZ / blocks.Length;
+
+                    // Diagnostic: for first claimed territory, compare computed centroid
+                    // with the actual CastleHeart world position.
+                    if (!diagLogged && isClaimed)
+                    {
+                        diagLogged = true;
+                        try
+                        {
+                            var ct = em.GetComponentData<CastleTerritory>(entity);
+                            if (em.Exists(ct.CastleHeart) && em.HasComponent<LocalToWorld>(ct.CastleHeart))
+                            {
+                                var heartPos = em.GetComponentData<LocalToWorld>(ct.CastleHeart).Position;
+                                Plugin.Logger.LogInfo($"[JSMonitor][FreePlot] Diag: territory centroid=({cx:F0},{cz:F0}) heartPos=({heartPos.x:F0},{heartPos.z:F0}) blocks={blocks.Length}");
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (isClaimed) continue;
 
                     // Bounds filter — skip territories outside visible map area.
                     if (cx < xMin || cx > xMax || cz < zMin || cz > zMax) continue;
