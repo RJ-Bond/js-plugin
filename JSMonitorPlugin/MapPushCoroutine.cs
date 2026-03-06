@@ -46,6 +46,19 @@ public class MapPushCoroutine : MonoBehaviour
         {
             yield return new WaitForSeconds(interval);
 
+            // ── Component dump trigger ────────────────────────────────────
+            try
+            {
+                Plugin.Instance.Config.Reload();
+                if (Plugin.DumpOnNextPush.Value)
+                {
+                    Plugin.DumpOnNextPush.Value = false;
+                    Plugin.Instance.Config.Save();
+                    MapDataCollector.DumpTerritoryComponents();
+                }
+            }
+            catch (Exception ex) { Plugin.Logger.LogWarning($"[JSMonitor] Dump-cfg error: {ex.Message}"); }
+
             // Phase 1: collect data and start HTTP request
             System.Threading.Tasks.Task<HttpResponseMessage>? sendTask = null;
             int playerCount = 0, castleCount = 0, freePlotCount = 0;
@@ -64,7 +77,7 @@ public class MapPushCoroutine : MonoBehaviour
                     ServerId  = Plugin.ServerId.Value,
                     Players   = snapshot.Players,
                     Castles   = snapshot.Castles,
-                    FreePlots = snapshot.FreePlots
+                    FreePlots = snapshot.FreePlots,
                 };
 
                 var json    = JsonSerializer.Serialize(payload, _json);

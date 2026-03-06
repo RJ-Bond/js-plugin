@@ -1,13 +1,12 @@
 using ProjectM;
 using ProjectM.CastleBuilding;
 using ProjectM.Network;
-using Stunlock.Core;
 using Unity.Collections;
 using Unity.Entities;
-using Unity.Mathematics;
 using Unity.Transforms;
 using System;
 using System.Collections.Generic;
+using System.Text;
 
 namespace JSMonitorPlugin;
 
@@ -27,6 +26,78 @@ public static class MapDataCollector
         }
     }
 
+    /// <summary>
+    /// Dumps ECS component types of territory entities to the log.
+    /// Compares a large territory (likely buildable) vs a small one (likely NPC/road).
+    /// Set Debug.DumpOnNextPush = true in JSMonitorPlugin.cfg to trigger.
+    /// </summary>
+    public static void DumpTerritoryComponents()
+    {
+        var world = ServerWorld;
+        if (world == null) { Plugin.Logger.LogWarning("[JSMonitor][Dump] Server world not ready."); return; }
+        var em = world.EntityManager;
+
+        var qb    = new EntityQueryBuilder(Allocator.Temp);
+        qb.AddAll(ComponentType.ReadOnly<CastleTerritory>());
+        var query = qb.Build(em);
+        var entities = query.ToEntityArray(Allocator.Temp);
+
+        Plugin.Logger.LogInfo($"[JSMonitor][Dump] Total CastleTerritory entities: {entities.Length}");
+
+        // Find largest (most blocks) and smallest (fewest blocks, min 5) territory.
+        int maxBlocks = 0, minBlocks = int.MaxValue;
+        int maxIdx = -1, minIdx = -1;
+        for (int i = 0; i < entities.Length; i++)
+        {
+            try
+            {
+                if (!em.HasBuffer<CastleTerritoryBlocks>(entities[i])) continue;
+                int len = em.GetBuffer<CastleTerritoryBlocks>(entities[i]).Length;
+                if (len > maxBlocks) { maxBlocks = len; maxIdx = i; }
+                if (len >= 5 && len < minBlocks) { minBlocks = len; minIdx = i; }
+            }
+            catch { }
+        }
+
+        void DumpEntity(int idx, string label)
+        {
+            if (idx < 0) return;
+            var e = entities[idx];
+            try
+            {
+                int blockCount = em.HasBuffer<CastleTerritoryBlocks>(e)
+                    ? em.GetBuffer<CastleTerritoryBlocks>(e).Length : 0;
+
+                var types = em.GetComponentTypes(e, Allocator.Temp);
+                var sb = new StringBuilder();
+                foreach (var ct in types)
+                {
+                    var mt = TypeManager.GetType(ct.TypeIndex);
+                    sb.Append(mt != null ? mt.Name : ct.TypeIndex.ToString()).Append(" | ");
+                }
+                types.Dispose();
+
+                Plugin.Logger.LogInfo($"[JSMonitor][Dump] === {label} (blocks={blockCount}) ===");
+                // Split into 3 lines to avoid log truncation
+                string all = sb.ToString();
+                int chunk = all.Length / 3;
+                Plugin.Logger.LogInfo($"[JSMonitor][Dump]   {all.Substring(0, Math.Min(chunk, all.Length))}");
+                if (all.Length > chunk)
+                    Plugin.Logger.LogInfo($"[JSMonitor][Dump]   {all.Substring(chunk, Math.Min(chunk, all.Length - chunk))}");
+                if (all.Length > chunk * 2)
+                    Plugin.Logger.LogInfo($"[JSMonitor][Dump]   {all.Substring(chunk * 2)}");
+            }
+            catch (Exception ex) { Plugin.Logger.LogWarning($"[JSMonitor][Dump] Error dumping {label}: {ex.Message}"); }
+        }
+
+        DumpEntity(maxIdx, "LARGE (buildable?)");
+        DumpEntity(minIdx, "SMALL (NPC/road?)");
+
+        entities.Dispose();
+        query.Dispose();
+        qb.Dispose();
+    }
+
     public static MapSnapshot? Collect()
     {
         var world = ServerWorld;
@@ -38,7 +109,7 @@ public static class MapDataCollector
         {
             Players   = CollectPlayers(em),
             Castles   = CollectCastles(em, world),
-            FreePlots = CollectFreePlots(em)
+            FreePlots = CollectFreePlots(em),
         };
 
         return snapshot;
@@ -127,6 +198,7 @@ public static class MapDataCollector
         try
         {
             var entities = query.ToEntityArray(Allocator.Temp);
+
             foreach (var entity in entities)
             {
                 try
@@ -180,26 +252,23 @@ public static class MapDataCollector
         return result;
     }
 
-    // ── Free plots ────────────────────────────────────────────────────────────
-    // A "free plot" = CastleTerritory with no associated CastleHeart.
-    // Territory entities don't have LocalToWorld, so we compute the center
-    // by averaging the tile coords from the CastleTerritoryBlocks buffer.
+    // ── Free plots ────────────────────────────────────────────────────────
 
     static List<FreePlotEntry> CollectFreePlots(EntityManager em)
     {
         var result = new List<FreePlotEntry>();
 
-        // Step 1: collect the territory Entity refs that already have a CastleHeart.
-        // CastleHeart.CastleTerritoryEntity points directly to the territory entity.
+        // Step 1: collect territory entities that are already claimed.
+        // CastleHeart.CastleTerritoryEntity points to the territory entity it occupies.
         var claimedEntities = new HashSet<Entity>();
         {
             var qb = new EntityQueryBuilder(Allocator.Temp);
             qb.AddAll(ComponentType.ReadOnly<CastleHeart>());
-            var query = qb.Build(em);
+            var q = qb.Build(em);
             try
             {
-                var entities = query.ToEntityArray(Allocator.Temp);
-                foreach (var e in entities)
+                var es = q.ToEntityArray(Allocator.Temp);
+                foreach (var e in es)
                 {
                     try
                     {
@@ -208,52 +277,64 @@ public static class MapDataCollector
                     }
                     catch { }
                 }
-                entities.Dispose();
+                es.Dispose();
             }
-            finally { query.Dispose(); qb.Dispose(); }
+            finally { q.Dispose(); qb.Dispose(); }
         }
 
-        // Step 2: iterate territory entities, skip claimed ones.
+        float xMin  = Plugin.WorldXMin.Value;
+        float xMax  = Plugin.WorldXMax.Value;
+        float zMin  = Plugin.WorldZMin.Value;
+        float zMax  = Plugin.WorldZMax.Value;
+        float scale = Plugin.BlockWorldSize.Value;
+
+        // Step 2: iterate all territory entities, skip claimed, compute world centroid.
+        var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
+        queryBuilder.AddAll(ComponentType.ReadOnly<CastleTerritory>());
+        var query = queryBuilder.Build(em);
+
+        try
         {
-            var qb = new EntityQueryBuilder(Allocator.Temp);
-            qb.AddAll(ComponentType.ReadOnly<CastleTerritory>());
-            var query = qb.Build(em);
-            try
+            var entities = query.ToEntityArray(Allocator.Temp);
+            foreach (var entity in entities)
             {
-                var entities = query.ToEntityArray(Allocator.Temp);
-                foreach (var e in entities)
+                try
                 {
-                    try
+                    if (claimedEntities.Contains(entity)) continue;
+
+                    if (!em.HasBuffer<CastleTerritoryBlocks>(entity)) continue;
+                    var blocks = em.GetBuffer<CastleTerritoryBlocks>(entity);
+                    if (blocks.Length == 0) continue;
+
+                    // Convert block tile coords → world coords, then average for centroid.
+                    // block.x = east-west tile index, block.y = south-north tile index (inverted Z).
+                    float sumX = 0f, sumZ = 0f;
+                    for (int i = 0; i < blocks.Length; i++)
                     {
-                        if (claimedEntities.Contains(e)) continue;
-
-                        // Compute center from tile-block buffer.
-                        if (!em.HasBuffer<CastleTerritoryBlocks>(e)) continue;
-                        var blocks = em.GetBuffer<CastleTerritoryBlocks>(e);
-                        if (blocks.Length == 0) continue;
-
-                        float sumX = 0f, sumZ = 0f;
-                        for (int i = 0; i < blocks.Length; i++)
-                        {
-                            sumX += blocks[i].BlockCoordinate.x;
-                            sumZ += blocks[i].BlockCoordinate.y; // tile Y → world Z
-                        }
-
-                        result.Add(new FreePlotEntry
-                        {
-                            X = sumX / blocks.Length,
-                            Z = sumZ / blocks.Length,
-                        });
+                        sumX += blocks[i].BlockCoordinate.x * scale + xMin;
+                        sumZ += zMax - blocks[i].BlockCoordinate.y * scale;
                     }
-                    catch { }
+                    float cx = sumX / blocks.Length;
+                    float cz = sumZ / blocks.Length;
+
+                    // Bounds filter — skip territories outside visible map area.
+                    if (cx < xMin || cx > xMax || cz < zMin || cz > zMax) continue;
+
+                    result.Add(new FreePlotEntry { X = cx, Z = cz });
                 }
-                entities.Dispose();
+                catch { /* skip */ }
             }
-            finally { query.Dispose(); qb.Dispose(); }
+            entities.Dispose();
+        }
+        finally
+        {
+            query.Dispose();
+            queryBuilder.Dispose();
         }
 
         return result;
     }
+
 }
 
 // ── Data models ───────────────────────────────────────────────────────────────
