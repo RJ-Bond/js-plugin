@@ -281,13 +281,11 @@ public static class MapDataCollector
             finally { q.Dispose(); qb.Dispose(); }
         }
 
-        float xMin    = Plugin.WorldXMin.Value;
-        float xMax    = Plugin.WorldXMax.Value;
-        float zMin    = Plugin.WorldZMin.Value;
-        float zMax    = Plugin.WorldZMax.Value;
-        float scale   = Plugin.BlockWorldSize.Value;
-        float blockX0 = Plugin.BlockXOrigin.Value;
-        float blockZ0 = Plugin.BlockZOrigin.Value;
+        float xMin  = Plugin.WorldXMin.Value;
+        float xMax  = Plugin.WorldXMax.Value;
+        float zMin  = Plugin.WorldZMin.Value;
+        float zMax  = Plugin.WorldZMax.Value;
+        float scale = Plugin.BlockWorldSize.Value;
 
         // Step 2: iterate all territory entities, skip claimed, compute world centroid.
         var queryBuilder = new EntityQueryBuilder(Allocator.Temp);
@@ -310,8 +308,8 @@ public static class MapDataCollector
                     float sumX = 0f, sumZ = 0f;
                     for (int i = 0; i < blocks.Length; i++)
                     {
-                        sumX += blocks[i].BlockCoordinate.x * scale + blockX0;
-                        sumZ += blockZ0 - blocks[i].BlockCoordinate.y * scale;
+                        sumX += blocks[i].BlockCoordinate.x * scale + xMin;
+                        sumZ += zMax - blocks[i].BlockCoordinate.y * scale;
                     }
                     float cx = sumX / blocks.Length;
                     float cz = sumZ / blocks.Length;
