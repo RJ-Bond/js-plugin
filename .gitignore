@@ -1,5 +1,10 @@
 bin/
 obj/
+# Track release DLL as deployment artifact
+!JSMonitorPlugin/bin/
+!JSMonitorPlugin/bin/Release/
+!JSMonitorPlugin/bin/Release/net6.0/
+!JSMonitorPlugin/bin/Release/net6.0/JSMonitorPlugin.dll
 .vs/
 *.user
 *.suo
