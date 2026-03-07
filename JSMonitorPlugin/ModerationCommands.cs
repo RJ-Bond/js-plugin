@@ -723,12 +723,25 @@ public static class ModerationHelpers
             var sbs = world.GetExistingSystemManaged<ServerBootstrapSystem>();
             if (sbs != null)
             {
-                // Find ConnectionStatusChangeReason type dynamically
-                Type? cscrType = null;
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                // Find ConnectionStatusChangeReason in the same assembly as ServerBootstrapSystem
+                // (avoids IL2CPP interop namespace mangling with full string lookup)
+                Type? cscrType = typeof(ServerBootstrapSystem).Assembly
+                    .GetTypes()
+                    .FirstOrDefault(t => t.IsEnum && t.Name == "ConnectionStatusChangeReason");
+
+                // Fallback: scan all assemblies by name only
+                if (cscrType == null)
                 {
-                    cscrType = asm.GetType("ProjectM.Network.ConnectionStatusChangeReason");
-                    if (cscrType != null) break;
+                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        try
+                        {
+                            cscrType = asm.GetTypes()
+                                .FirstOrDefault(t => t.IsEnum && t.Name == "ConnectionStatusChangeReason");
+                            if (cscrType != null) break;
+                        }
+                        catch { }
+                    }
                 }
 
                 if (cscrType != null)
