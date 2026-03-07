@@ -520,6 +520,43 @@ public class ModerationVCFCommands
         }
     }
 
+    // ── .js-help ──────────────────────────────────────────────────────────────
+    [Command("js-help", description: "Show all JSMonitor admin commands")]
+    public void JsHelp(ChatCommandContext ctx)
+    {
+        if (!IsAdmin(ctx)) return;
+
+        ctx.Reply("<color=#00ccff>━━━━━━━━━ JSMonitor команды ━━━━━━━━━</color>");
+
+        ctx.Reply("<color=#ffcc00>[Баны]</color>");
+        ctx.Reply("<color=#ffffff>.ban</color> <color=#888888><игрок|SteamID> <длит.> [причина]</color>  30m/2h/7d/0=навсегда");
+        ctx.Reply("<color=#ffffff>.unban</color> <color=#888888><игрок|SteamID></color>  — разбанить (офлайн тоже)");
+        ctx.Reply("<color=#ffffff>.banlist</color>  — активные баны с остатком времени");
+
+        ctx.Reply("<color=#ffcc00>[Муты]</color>");
+        ctx.Reply("<color=#ffffff>.mute</color> <color=#888888><игрок> <длит.> [причина]</color>");
+        ctx.Reply("<color=#ffffff>.unmute</color> <color=#888888><игрок|SteamID></color>  — работает офлайн");
+        ctx.Reply("<color=#ffffff>.mutelist</color>  — активные муты");
+
+        ctx.Reply("<color=#ffcc00>[Предупреждения]</color>");
+        ctx.Reply($"<color=#ffffff>.warn</color> <color=#888888><игрок> [причина]</color>  — {WarnDatabase.AutoBanThreshold} предупреждения = автобан");
+        ctx.Reply("<color=#ffffff>.clearwarns</color> <color=#888888><игрок|SteamID></color>");
+        ctx.Reply("<color=#ffffff>.warnlist</color> <color=#888888>[игрок]</color>  — все или по игроку");
+
+        ctx.Reply("<color=#ffcc00>[Игроки]</color>");
+        ctx.Reply("<color=#ffffff>.kick</color> <color=#888888><игрок> [причина]</color>  — частичное имя поддерживается");
+        ctx.Reply("<color=#ffffff>.online</color>  — список онлайн со SteamID");
+        ctx.Reply("<color=#ffffff>.info</color> <color=#888888><игрок|SteamID></color>  — статус, баны, муты, варны");
+        ctx.Reply("<color=#ffffff>.history</color> <color=#888888><игрок|SteamID></color>  — история нарушений");
+
+        ctx.Reply("<color=#ffcc00>[Прочее]</color>");
+        ctx.Reply("<color=#ffffff>.announce</color> <color=#888888><текст...></color>  — объявление всем (до 10 слов)");
+        ctx.Reply("<color=#ffffff>.chatfilter</color> <color=#888888>list|add|remove <слово></color>  — фильтр чата");
+        ctx.Reply("<color=#ffffff>.js-help</color>  — эта справка");
+
+        ctx.Reply("<color=#00ccff>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</color>");
+    }
+
     // ── .chatfilter ───────────────────────────────────────────────────────────
     [Command("chatfilter", description: "Chat filter: .chatfilter list|add|remove <word>")]
     public void ChatFilterCmd(ChatCommandContext ctx, string action = "", string word = "")

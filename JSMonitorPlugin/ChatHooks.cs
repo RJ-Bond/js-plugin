@@ -5,6 +5,7 @@ using Unity.Collections;
 using Unity.Entities;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 
 namespace JSMonitorPlugin;
 
@@ -253,11 +254,15 @@ public static class ChatHooks
         return result;
     }
 
-    // ── Harmony: connect / disconnect ─────────────────────────────────────────
+    // ── Harmony: connect / disconnect + admin auth detection ─────────────────
 
     [HarmonyPatch(typeof(ServerBootstrapSystem), "OnUpdate")]
     static class ServerBootstrapSystemPatch
     {
+        // Tracks last known IsAdmin state per PlatformId for connected players.
+        // Used to detect the moment a player gains admin rights (.adminauth).
+        static readonly Dictionary<ulong, bool> _adminState = new();
+
         static void Postfix()
         {
             try
@@ -266,6 +271,7 @@ public static class ChatHooks
                 if (world == null) return;
                 var em = world.EntityManager;
 
+                // ── Connection events ─────────────────────────────────────────
                 var qb = new EntityQueryBuilder(Allocator.Temp);
                 qb.AddAll(ComponentType.ReadOnly<UserConnectionChangedEvent>());
                 var query = qb.Build(em);
@@ -277,19 +283,18 @@ public static class ChatHooks
                     {
                         var ev = em.GetComponentData<UserConnectionChangedEvent>(entity);
 
-                        // Skip persistence-loading events (game startup restore)
                         if (ev.IsFromPersistenceLoading) continue;
-
                         if (!em.Exists(ev.UserEntity)) continue;
+
                         var user       = em.GetComponentData<User>(ev.UserEntity);
                         var playerName = user.CharacterName.Value;
                         if (string.IsNullOrEmpty(playerName)) continue;
-                        var isConnect  = ev.Type == UserConnectionChangedType.Connected;
-                        var ts         = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-                        // On connect: check ban database and kick immediately if banned
+                        var isConnect = ev.Type == UserConnectionChangedType.Connected;
+                        var ts        = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
                         if (isConnect && ModerationHelpers.CheckBanOnConnect(ev.UserEntity, em))
-                            continue; // don't forward a connect event for a banned player
+                            continue;
 
                         PendingEvents.Enqueue(new ServerEvent(
                             isConnect ? "connect" : "disconnect",
@@ -299,17 +304,62 @@ public static class ChatHooks
                             $"[JSMonitor] {(isConnect ? "Connect" : "Disconnect")}: {playerName}");
 
                         if (isConnect)
+                        {
                             ModerationHelpers.BroadcastMessage(em,
                                 $"<color=#44ff44>* Игрок</color> <color=#88ccff>{playerName}</color> <color=#44ff44>подключился к серверу.</color>");
+                            // Seed admin state so a connect as admin doesn't trigger welcome
+                            _adminState[user.PlatformId] = user.IsAdmin;
+                        }
                         else
+                        {
                             ModerationHelpers.BroadcastMessage(em,
                                 $"<color=#ff8844>* Игрок</color> <color=#88ccff>{playerName}</color> <color=#ff8844>отключился от сервера.</color>");
+                            _adminState.Remove(user.PlatformId);
+                        }
                     }
                     catch { }
                 }
                 entities.Dispose();
                 query.Dispose();
                 qb.Dispose();
+
+                // ── Admin auth detection ──────────────────────────────────────
+                // Check all connected users; if IsAdmin flipped true → send welcome.
+                var qb2 = new EntityQueryBuilder(Allocator.Temp);
+                qb2.AddAll(ComponentType.ReadOnly<User>());
+                var q2 = qb2.Build(em);
+                var userEntities = q2.ToEntityArray(Allocator.Temp);
+                foreach (var ue in userEntities)
+                {
+                    try
+                    {
+                        var u = em.GetComponentData<User>(ue);
+                        if (!u.IsConnected) continue;
+
+                        var id = u.PlatformId;
+                        bool wasAdmin = _adminState.TryGetValue(id, out var prev) && prev;
+                        _adminState[id] = u.IsAdmin;
+
+                        if (u.IsAdmin && !wasAdmin)
+                        {
+                            var name = u.CharacterName.Value;
+                            if (string.IsNullOrEmpty(name)) continue;
+
+                            ModerationHelpers.SendMessageToUser(em, ue,
+                                $"<color=#ffcc00>* Привет! {name}</color>");
+                            ModerationHelpers.SendMessageToUser(em, ue,
+                                "<color=#00ccff>* Вам как админу доступны команды:</color>");
+                            ModerationHelpers.SendMessageToUser(em, ue,
+                                "<color=#ffffff>* .js-help</color>");
+
+                            Plugin.Logger.LogInfo($"[JSMonitor] Admin auth detected: {name}");
+                        }
+                    }
+                    catch { }
+                }
+                userEntities.Dispose();
+                q2.Dispose();
+                qb2.Dispose();
             }
             catch { }
         }
