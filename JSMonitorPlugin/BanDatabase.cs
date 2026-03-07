@@ -85,6 +85,25 @@ public static class BanDatabase
         Plugin.Logger.LogInfo($"[JSMonitor] Unbanned SteamID {steamId}");
     }
 
+    /// <summary>
+    /// Unban by SteamID or character name (case-insensitive).
+    /// Returns the entry that was removed, or null if not found.
+    /// </summary>
+    public static BanEntry? UnbanByNameOrSteamId(string nameOrSteamId)
+    {
+        lock (_lock)
+        {
+            var entry = _bans.FirstOrDefault(b =>
+                b.SteamId == nameOrSteamId ||
+                b.Name.Equals(nameOrSteamId, StringComparison.OrdinalIgnoreCase));
+            if (entry == null) return null;
+            _bans.RemoveAll(b => b.SteamId == entry.SteamId);
+            Save();
+            Plugin.Logger.LogInfo($"[JSMonitor] Unbanned {entry.Name} ({entry.SteamId})");
+            return entry;
+        }
+    }
+
     // ── Read helpers ──────────────────────────────────────────────────────────
 
     /// <summary>

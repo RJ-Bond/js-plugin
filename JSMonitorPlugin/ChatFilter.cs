@@ -64,4 +64,53 @@ public static class ChatFilter
         }
         return null;
     }
+
+    public static List<string> GetWords()
+    {
+        lock (_lock) { return [.. _words]; }
+    }
+
+    /// <summary>Adds a word to the filter. Returns false if it already exists.</summary>
+    public static bool AddWord(string word)
+    {
+        word = word.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(word)) return false;
+        lock (_lock)
+        {
+            if (_words.Contains(word)) return false;
+            _words.Add(word);
+            SaveWords();
+            return true;
+        }
+    }
+
+    /// <summary>Removes a word from the filter. Returns false if not found.</summary>
+    public static bool RemoveWord(string word)
+    {
+        word = word.Trim().ToLowerInvariant();
+        lock (_lock)
+        {
+            int removed = _words.RemoveAll(w => w == word);
+            if (removed > 0) SaveWords();
+            return removed > 0;
+        }
+    }
+
+    static void SaveWords()
+    {
+        try
+        {
+            var lines = new List<string>
+            {
+                "# Chat filter — one banned word/phrase per line",
+                "# Lines starting with # are comments"
+            };
+            lines.AddRange(_words);
+            File.WriteAllLines(_path, lines);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Logger.LogWarning($"[JSMonitor] ChatFilter save error: {ex.Message}");
+        }
+    }
 }

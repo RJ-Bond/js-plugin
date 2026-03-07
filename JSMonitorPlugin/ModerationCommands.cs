@@ -10,305 +10,296 @@ using VampireCommandFramework;
 namespace JSMonitorPlugin;
 
 /// <summary>
-/// VCF chat commands for moderation:
-///   .kick  PlayerName [Reason]
-///   .ban   PlayerName Duration [Reason]   (duration: 1h / 2d / 0 = permanent)
-///   .unban SteamID
-///
-/// Ban-on-login check is called from ChatHooks.ServerBootstrapSystemPatch.
-/// Remote commands from the web panel are executed by MapPushCoroutine.
+/// VCF chat commands for moderation.
+/// Commands:
+///   .kick  Player [reason...]
+///   .ban   Player Duration [reason...]    (duration: 30m / 2h / 7d / 0 = permanent)
+///   .unban Player|SteamID
+///   .mute  Player Duration [reason...]
+///   .unmute Player|SteamID
+///   .warn  Player [reason...]
+///   .clearwarns Player
+///   .announce Message...
+///   .online
+///   .banlist / .mutelist / .warnlist [Player]
+///   .info  Player|SteamID
+///   .history Player|SteamID
+///   .chatfilter list|add|remove [word]
 /// </summary>
 public class ModerationVCFCommands
 {
-    // ── .kick PlayerName [Reason] ────────────────────────────────────────────
-    [Command("kick", description: "Kick a player")]
-    public void Kick(ChatCommandContext ctx, string playerName = "", string reason = "kicked by admin")
+    // ── Shared helpers ────────────────────────────────────────────────────────
+
+    static bool IsAdmin(ChatCommandContext ctx)
     {
-        if (!ctx.Event.User.IsAdmin)
+        if (ctx.Event.User.IsAdmin) return true;
+        ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
+        return false;
+    }
+
+    /// <summary>Join up to 5 extra reason words; use fallback if all empty.</summary>
+    static string BuildReason(string w0, string w1, string w2, string w3, string w4, string fallback)
+    {
+        var r = string.Join(" ", new[] { w0, w1, w2, w3, w4 }
+            .Where(x => !string.IsNullOrWhiteSpace(x))).Trim();
+        return r.Length > 0 ? r : fallback;
+    }
+
+    /// <summary>Remaining time as "7д 3ч", "45м", "навсегда".</summary>
+    static string FormatRemaining(long? expiresAt)
+    {
+        if (!expiresAt.HasValue) return "навсегда";
+        var sec = expiresAt.Value - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (sec <= 0) return "истёк";
+        var ts = TimeSpan.FromSeconds(sec);
+        if (ts.TotalDays >= 1)  return $"{(int)ts.TotalDays}д {ts.Hours}ч";
+        if (ts.TotalHours >= 1) return $"{(int)ts.TotalHours}ч {ts.Minutes}м";
+        return $"{(int)ts.TotalMinutes}м";
+    }
+
+    /// <summary>Expiry date + remaining: "09.03.2026 15:00 (осталось 2д 3ч)".</summary>
+    static string FormatExpiry(long? expiresAt)
+    {
+        if (!expiresAt.HasValue) return "навсегда";
+        var dt = DateTimeOffset.FromUnixTimeSeconds(expiresAt.Value)
+                               .ToOffset(TimeSpan.FromHours(3));
+        return $"{dt:dd.MM.yyyy HH:mm} (осталось {FormatRemaining(expiresAt)})";
+    }
+
+    /// <summary>
+    /// Finds an online player by exact or partial name.
+    /// Returns false and sends a reply if 0 or ambiguous matches.
+    /// </summary>
+    static bool TryFindOnline(EntityManager em, string input,
+        out Entity ue, out User user, ChatCommandContext ctx)
+    {
+        ue = Entity.Null; user = default;
+
+        // Exact match first
+        if (ModerationHelpers.TryFindUser(em, input, out ue, out user)) return true;
+
+        // Partial name search
+        var matches = new List<(Entity e, User u)>();
+        var qb = new EntityQueryBuilder(Allocator.Temp);
+        qb.AddAll(ComponentType.ReadOnly<User>());
+        var q = qb.Build(em);
+        try
         {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
+            var entities = q.ToEntityArray(Allocator.Temp);
+            foreach (var e in entities)
+            {
+                try
+                {
+                    var u = em.GetComponentData<User>(e);
+                    if (!u.IsConnected) continue;
+                    if (u.CharacterName.Value.IndexOf(input, StringComparison.OrdinalIgnoreCase) >= 0)
+                        matches.Add((e, u));
+                }
+                catch { }
+            }
+            entities.Dispose();
         }
-        if (string.IsNullOrWhiteSpace(playerName))
-        {
-            ctx.Reply("Использование: .kick <игрок> [причина]");
-            return;
-        }
+        finally { q.Dispose(); qb.Dispose(); }
+
+        if (matches.Count == 1) { (ue, user) = matches[0]; return true; }
+        if (matches.Count > 1)
+            ctx.Reply($"<color=#ffaa00>Несколько совпадений: {string.Join(", ", matches.Select(m => m.u.CharacterName.Value))}. Уточните имя.</color>");
+        else
+            ctx.Reply($"<color=#ffaa00>Игрок '{input}' не найден онлайн.</color>");
+        return false;
+    }
+
+    // ── .kick ─────────────────────────────────────────────────────────────────
+    [Command("kick", description: "Kick: .kick <player> [reason...]")]
+    public void Kick(ChatCommandContext ctx, string playerName = "",
+        string r0 = "", string r1 = "", string r2 = "", string r3 = "", string r4 = "")
+    {
+        if (!IsAdmin(ctx)) return;
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .kick <игрок> [причина]"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         var em = world.EntityManager;
         var by = ctx.Event.User.CharacterName.Value;
 
-        if (!ModerationHelpers.TryFindUser(em, playerName, out var ue, out var user))
-        {
-            ctx.Reply($"Игрок '{playerName}' не найден онлайн.");
-            return;
-        }
+        if (!TryFindOnline(em, playerName, out var ue, out var user, ctx)) return;
 
-        var steamId  = user.PlatformId.ToString();
         var charName = user.CharacterName.Value;
+        var steamId  = user.PlatformId.ToString();
 
-        ModerationHelpers.BroadcastMessage(em, $"<color=#ff4444>*</color> Игрок <color=#ffcc00>{charName}</color> был кикнут админом <color=#00ccff>{by}</color>. Причина: <color=#ff8800>{reason}</color>");
+        if (charName.Equals(by, StringComparison.OrdinalIgnoreCase))
+        { ctx.Reply("<color=#ffaa00>Вы не можете кикнуть себя.</color>"); return; }
+
+        var reason = BuildReason(r0, r1, r2, r3, r4, "kicked by admin");
+
+        ModerationHelpers.BroadcastMessage(em,
+            $"<color=#ff4444>*</color> Игрок <color=#ffcc00>{charName}</color> был кикнут админом <color=#00ccff>{by}</color>. Причина: <color=#ff8800>{reason}</color>");
         ModerationHelpers.KickUser(ue, em, reason);
         ctx.Reply($"Kicked {charName} ({steamId})");
 
-        ChatHooks.PendingEvents.Enqueue(new ServerEvent(
-            "moderation", by, "kick",
-            $"Kicked {charName} ({steamId}): {reason}",
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        ModlogDatabase.Log(new ModlogEntry { Action = "kick", SteamId = steamId, Name = charName, Reason = reason, By = by, At = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+        ChatHooks.PendingEvents.Enqueue(new ServerEvent("moderation", by, "kick", $"Kicked {charName} ({steamId}): {reason}", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
 
-    // ── .ban PlayerName/SteamID Duration [Reason] ────────────────────────────
-    [Command("ban", description: "Ban a player (online or offline, by name or SteamID)")]
-    public void Ban(ChatCommandContext ctx, string playerName = "", string duration = "", string reason = "banned by admin")
+    // ── .ban ──────────────────────────────────────────────────────────────────
+    [Command("ban", description: "Ban: .ban <player|SteamID> <duration> [reason...]  (30m/2h/7d/0=perm)")]
+    public void Ban(ChatCommandContext ctx, string playerName = "", string duration = "",
+        string r0 = "", string r1 = "", string r2 = "", string r3 = "", string r4 = "")
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
+        if (!IsAdmin(ctx)) return;
         if (string.IsNullOrWhiteSpace(playerName) || string.IsNullOrWhiteSpace(duration))
-        {
-            ctx.Reply("Использование: .ban <игрок|SteamID> <длительность> [причина]  (пример: .ban Vasya 1d читерство)");
-            return;
-        }
+        { ctx.Reply("Использование: .ban <игрок|SteamID> <длительность> [причина]  (пример: .ban Vasya 1d читерство)"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         var em = world.EntityManager;
         var by = ctx.Event.User.CharacterName.Value;
 
-        var expiresAt = BanDatabase.ParseDuration(duration);
-
-        // Try online first, then offline (name or SteamID)
         bool isOnline = ModerationHelpers.TryFindUser(em, playerName, out var ue, out var user);
         if (!isOnline && !ModerationHelpers.TryFindUserOffline(em, playerName, out ue, out user))
-        {
-            ctx.Reply($"Игрок '{playerName}' не найден ни онлайн, ни в истории сервера.");
-            return;
-        }
+        { ctx.Reply($"<color=#ffaa00>Игрок '{playerName}' не найден ни онлайн, ни в истории сервера.</color>"); return; }
 
-        var steamId  = user.PlatformId.ToString();
         var charName = user.CharacterName.Value;
+        var steamId  = user.PlatformId.ToString();
 
-        BanDatabase.AddBan(new BanEntry
-        {
-            SteamId   = steamId,
-            Name      = charName,
-            Reason    = reason,
-            BannedBy  = by,
-            BannedAt  = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            ExpiresAt = expiresAt,
-        });
+        if (charName.Equals(by, StringComparison.OrdinalIgnoreCase))
+        { ctx.Reply("<color=#ffaa00>Вы не можете забанить себя.</color>"); return; }
 
-        var durDisplay = expiresAt.HasValue
-            ? TimeSpan.FromSeconds(expiresAt.Value - DateTimeOffset.UtcNow.ToUnixTimeSeconds()).ToString(@"d\d\ h\h")
-            : "навсегда";
+        var reason    = BuildReason(r0, r1, r2, r3, r4, "banned by admin");
+        var expiresAt = BanDatabase.ParseDuration(duration);
+        var durStr    = FormatRemaining(expiresAt);
+        var offSuffix = isOnline ? "" : " (оффлайн)";
 
-        var offlineSuffix = isOnline ? "" : " (оффлайн)";
+        BanDatabase.AddBan(new BanEntry { SteamId = steamId, Name = charName, Reason = reason, BannedBy = by, BannedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ExpiresAt = expiresAt });
         ModerationHelpers.BroadcastMessage(em,
-            $"<color=#ff4444>*</color> Игрок <color=#ffcc00>{charName}</color> забанен админом <color=#00ccff>{by}</color> на <color=#ffffff>{durDisplay}</color>{offlineSuffix}. Причина: <color=#ff8800>{reason}</color>");
+            $"<color=#ff4444>*</color> Игрок <color=#ffcc00>{charName}</color> забанен админом <color=#00ccff>{by}</color> на <color=#ffffff>{durStr}</color>{offSuffix}. Причина: <color=#ff8800>{reason}</color>");
 
         if (isOnline)
-            ModerationHelpers.KickUser(ue, em, $"Бан на {durDisplay}. Причина: {reason}", expiresAt ?? 0L);
+            ModerationHelpers.KickUser(ue, em, $"Бан на {durStr}. Причина: {reason}", expiresAt ?? 0L);
 
-        ctx.Reply($"Banned {charName} ({steamId}) for {durDisplay}{offlineSuffix}");
+        ctx.Reply($"Banned {charName} ({steamId}) for {durStr}{offSuffix}");
 
-        ChatHooks.PendingEvents.Enqueue(new ServerEvent(
-            "moderation", by, "ban",
-            $"Banned {charName} ({steamId}) for {durDisplay}{offlineSuffix}: {reason}",
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        ModlogDatabase.Log(new ModlogEntry { Action = "ban", SteamId = steamId, Name = charName, Reason = reason, By = by, At = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ExpiresAt = expiresAt });
+        ChatHooks.PendingEvents.Enqueue(new ServerEvent("moderation", by, "ban", $"Banned {charName} ({steamId}) for {durStr}{offSuffix}: {reason}", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
 
-    // ── .unban SteamID ───────────────────────────────────────────────────────
-    [Command("unban", description: "Unban a player by SteamID")]
-    public void Unban(ChatCommandContext ctx, string steamId = "")
+    // ── .unban ────────────────────────────────────────────────────────────────
+    [Command("unban", description: "Unban: .unban <player|SteamID>")]
+    public void Unban(ChatCommandContext ctx, string playerName = "")
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(steamId))
-        {
-            ctx.Reply("Использование: .unban <SteamID>");
-            return;
-        }
+        if (!IsAdmin(ctx)) return;
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .unban <игрок|SteamID>"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         var em = world.EntityManager;
         var by = ctx.Event.User.CharacterName.Value;
 
-        BanDatabase.Unban(steamId);
-        ModerationHelpers.BroadcastMessage(em, $"<color=#44ff44>*</color> SteamID <color=#ffcc00>{steamId}</color> был разбанен админом <color=#00ccff>{by}</color>.");
-        ctx.Reply($"Unbanned SteamID {steamId}");
+        var entry = BanDatabase.UnbanByNameOrSteamId(playerName);
+        if (entry == null) { ctx.Reply($"<color=#ffaa00>Бан для '{playerName}' не найден.</color>"); return; }
 
-        ChatHooks.PendingEvents.Enqueue(new ServerEvent(
-            "moderation", by, "unban",
-            $"Unbanned SteamID {steamId}",
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        ModerationHelpers.BroadcastMessage(em,
+            $"<color=#44ff44>*</color> Игрок <color=#ffcc00>{entry.Name}</color> разбанен админом <color=#00ccff>{by}</color>.");
+        ctx.Reply($"Unbanned {entry.Name} ({entry.SteamId})");
+
+        ModlogDatabase.Log(new ModlogEntry { Action = "unban", SteamId = entry.SteamId, Name = entry.Name, By = by, At = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+        ChatHooks.PendingEvents.Enqueue(new ServerEvent("moderation", by, "unban", $"Unbanned {entry.Name} ({entry.SteamId})", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
 
-    // ── .mute PlayerName Duration [Reason] ───────────────────────────────────
-    [Command("mute", description: "Mute a player")]
-    public void Mute(ChatCommandContext ctx, string playerName = "", string duration = "", string reason = "muted by admin")
+    // ── .mute ─────────────────────────────────────────────────────────────────
+    [Command("mute", description: "Mute: .mute <player> <duration> [reason...]")]
+    public void Mute(ChatCommandContext ctx, string playerName = "", string duration = "",
+        string r0 = "", string r1 = "", string r2 = "", string r3 = "", string r4 = "")
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
+        if (!IsAdmin(ctx)) return;
         if (string.IsNullOrWhiteSpace(playerName) || string.IsNullOrWhiteSpace(duration))
-        {
-            ctx.Reply("Использование: .mute <игрок> <длительность> [причина]");
-            return;
-        }
+        { ctx.Reply("Использование: .mute <игрок> <длительность> [причина]"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         var em = world.EntityManager;
         var by = ctx.Event.User.CharacterName.Value;
 
-        if (!ModerationHelpers.TryFindUser(em, playerName, out _, out var user))
-        {
-            ctx.Reply($"Игрок '{playerName}' не найден онлайн.");
-            return;
-        }
+        if (!TryFindOnline(em, playerName, out _, out var user, ctx)) return;
 
-        var steamId  = user.PlatformId.ToString();
-        var charName = user.CharacterName.Value;
+        var charName  = user.CharacterName.Value;
+        var steamId   = user.PlatformId.ToString();
+
+        if (charName.Equals(by, StringComparison.OrdinalIgnoreCase))
+        { ctx.Reply("<color=#ffaa00>Вы не можете замьютить себя.</color>"); return; }
+
+        var reason    = BuildReason(r0, r1, r2, r3, r4, "muted by admin");
         var expiresAt = BanDatabase.ParseDuration(duration);
+        var durStr    = FormatRemaining(expiresAt);
 
-        MuteDatabase.AddMute(new MuteEntry
-        {
-            SteamId   = steamId,
-            Name      = charName,
-            Reason    = reason,
-            MutedBy   = by,
-            MutedAt   = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            ExpiresAt = expiresAt,
-        });
+        MuteDatabase.AddMute(new MuteEntry { SteamId = steamId, Name = charName, Reason = reason, MutedBy = by, MutedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ExpiresAt = expiresAt });
+        ModerationHelpers.BroadcastMessage(em,
+            $"<color=#ff4444>*</color> Игрок <color=#ffcc00>{charName}</color> замьючен админом <color=#00ccff>{by}</color> на <color=#ffffff>{durStr}</color>. Причина: <color=#ff8800>{reason}</color>");
+        ctx.Reply($"Muted {charName} ({steamId}) for {durStr}");
 
-        var durDisplay = expiresAt.HasValue
-            ? TimeSpan.FromSeconds(expiresAt.Value - DateTimeOffset.UtcNow.ToUnixTimeSeconds()).ToString(@"d\d\ h\h")
-            : "permanent";
-
-        ModerationHelpers.BroadcastMessage(em, $"<color=#ff4444>*</color> Игрок <color=#ffcc00>{charName}</color> замьючен админом <color=#00ccff>{by}</color> на <color=#ffffff>{durDisplay}</color>. Причина: <color=#ff8800>{reason}</color>");
-        ctx.Reply($"Muted {charName} ({steamId}) for {durDisplay}");
-
-        ChatHooks.PendingEvents.Enqueue(new ServerEvent(
-            "moderation", by, "mute",
-            $"Muted {charName} ({steamId}) for {durDisplay}: {reason}",
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        ModlogDatabase.Log(new ModlogEntry { Action = "mute", SteamId = steamId, Name = charName, Reason = reason, By = by, At = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ExpiresAt = expiresAt });
+        ChatHooks.PendingEvents.Enqueue(new ServerEvent("moderation", by, "mute", $"Muted {charName} ({steamId}) for {durStr}: {reason}", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
 
-    // ── .unmute PlayerName ────────────────────────────────────────────────────
-    [Command("unmute", description: "Unmute a player")]
+    // ── .unmute ───────────────────────────────────────────────────────────────
+    [Command("unmute", description: "Unmute: .unmute <player|SteamID>  (works offline)")]
     public void Unmute(ChatCommandContext ctx, string playerName = "")
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(playerName))
-        {
-            ctx.Reply("Использование: .unmute <игрок>");
-            return;
-        }
+        if (!IsAdmin(ctx)) return;
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .unmute <игрок|SteamID>"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         var em = world.EntityManager;
         var by = ctx.Event.User.CharacterName.Value;
 
-        if (!ModerationHelpers.TryFindUser(em, playerName, out _, out var user))
-        {
-            ctx.Reply($"Игрок '{playerName}' не найден онлайн.");
-            return;
-        }
+        var entry = MuteDatabase.UnmuteByNameOrSteamId(playerName);
+        if (entry == null) { ctx.Reply($"<color=#ffaa00>Мут для '{playerName}' не найден.</color>"); return; }
 
-        var steamId  = user.PlatformId.ToString();
-        var charName = user.CharacterName.Value;
+        ModerationHelpers.BroadcastMessage(em,
+            $"<color=#44ff44>*</color> Игрок <color=#ffcc00>{entry.Name}</color> размьючен админом <color=#00ccff>{by}</color>.");
+        ctx.Reply($"Unmuted {entry.Name} ({entry.SteamId})");
 
-        MuteDatabase.Unmute(steamId);
-        ModerationHelpers.BroadcastMessage(em, $"<color=#44ff44>*</color> Игрок <color=#ffcc00>{charName}</color> размьючен админом <color=#00ccff>{by}</color>.");
-        ctx.Reply($"Unmuted {charName} ({steamId})");
-
-        ChatHooks.PendingEvents.Enqueue(new ServerEvent(
-            "moderation", by, "unmute",
-            $"Unmuted {charName} ({steamId})",
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        ModlogDatabase.Log(new ModlogEntry { Action = "unmute", SteamId = entry.SteamId, Name = entry.Name, By = by, At = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+        ChatHooks.PendingEvents.Enqueue(new ServerEvent("moderation", by, "unmute", $"Unmuted {entry.Name} ({entry.SteamId})", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
 
-    // ── .warn PlayerName [Reason] ─────────────────────────────────────────────
-    [Command("warn", description: "Warn a player (3 warns = auto-ban)")]
-    public void Warn(ChatCommandContext ctx, string playerName = "", string reason = "warned by admin")
+    // ── .warn ─────────────────────────────────────────────────────────────────
+    [Command("warn", description: "Warn: .warn <player> [reason...]  (3 warns = auto-ban)")]
+    public void Warn(ChatCommandContext ctx, string playerName = "",
+        string r0 = "", string r1 = "", string r2 = "", string r3 = "", string r4 = "")
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(playerName))
-        {
-            ctx.Reply("Использование: .warn <игрок> [причина]");
-            return;
-        }
+        if (!IsAdmin(ctx)) return;
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .warn <игрок> [причина]"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         var em = world.EntityManager;
         var by = ctx.Event.User.CharacterName.Value;
 
-        if (!ModerationHelpers.TryFindUser(em, playerName, out var ue, out var user))
-        {
-            ctx.Reply($"Игрок '{playerName}' не найден онлайн.");
-            return;
-        }
+        if (!TryFindOnline(em, playerName, out var ue, out var user, ctx)) return;
 
-        var steamId  = user.PlatformId.ToString();
         var charName = user.CharacterName.Value;
+        var steamId  = user.PlatformId.ToString();
+        var reason   = BuildReason(r0, r1, r2, r3, r4, "warned by admin");
 
-        WarnDatabase.AddWarn(new WarnEntry
-        {
-            SteamId  = steamId,
-            Name     = charName,
-            Reason   = reason,
-            WarnedBy = by,
-            WarnedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-        });
-
+        WarnDatabase.AddWarn(new WarnEntry { SteamId = steamId, Name = charName, Reason = reason, WarnedBy = by, WarnedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
         var count = WarnDatabase.GetWarnCount(steamId);
 
         ModerationHelpers.BroadcastMessage(em,
-            $"<color=#ffaa00>*</color> Игрок <color=#ffcc00>{charName}</color> получил предупреждение от админа <color=#00ccff>{by}</color> (<color=#ffffff>{count}/{WarnDatabase.AutoBanThreshold}</color>). Причина: <color=#ff8800>{reason}</color>");
+            $"<color=#ffaa00>*</color> Игрок <color=#ffcc00>{charName}</color> получил предупреждение от <color=#00ccff>{by}</color> (<color=#ffffff>{count}/{WarnDatabase.AutoBanThreshold}</color>). Причина: <color=#ff8800>{reason}</color>");
 
-        ChatHooks.PendingEvents.Enqueue(new ServerEvent(
-            "moderation", by, "warn",
-            $"Warned {charName} ({steamId}) [{count}/{WarnDatabase.AutoBanThreshold}]: {reason}",
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        ModlogDatabase.Log(new ModlogEntry { Action = "warn", SteamId = steamId, Name = charName, Reason = reason, By = by, At = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+        ChatHooks.PendingEvents.Enqueue(new ServerEvent("moderation", by, "warn", $"Warned {charName} ({steamId}) [{count}/{WarnDatabase.AutoBanThreshold}]: {reason}", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
 
-        // Auto-ban at threshold
         if (count >= WarnDatabase.AutoBanThreshold)
         {
-            BanDatabase.AddBan(new BanEntry
-            {
-                SteamId  = steamId,
-                Name     = charName,
-                Reason   = $"Автобан: {count} предупреждений",
-                BannedBy = "system",
-                BannedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                ExpiresAt = null, // permanent
-            });
-
+            BanDatabase.AddBan(new BanEntry { SteamId = steamId, Name = charName, Reason = $"Автобан: {count} предупреждений", BannedBy = "system", BannedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ExpiresAt = null });
             ModerationHelpers.BroadcastMessage(em,
                 $"<color=#ff0000>*</color> Игрок <color=#ffcc00>{charName}</color> <color=#ff0000>автоматически забанен</color> за {count} предупреждений!");
             ModerationHelpers.KickUser(ue, em, $"Автобан: {count} предупреждений", 0L);
             WarnDatabase.ClearWarns(steamId);
-
+            ModlogDatabase.Log(new ModlogEntry { Action = "ban", SteamId = steamId, Name = charName, Reason = $"Автобан: {count} предупреждений", By = "system", At = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
             ctx.Reply($"Auto-banned {charName} ({steamId}) — {count} warnings reached.");
         }
         else
@@ -317,57 +308,46 @@ public class ModerationVCFCommands
         }
     }
 
-    // ── .clearwarns PlayerName ────────────────────────────────────────────────
-    [Command("clearwarns", description: "Clear all warnings for a player")]
+    // ── .clearwarns ───────────────────────────────────────────────────────────
+    [Command("clearwarns", description: "Clear all warnings: .clearwarns <player|SteamID>")]
     public void ClearWarns(ChatCommandContext ctx, string playerName = "")
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(playerName))
-        {
-            ctx.Reply("Использование: .clearwarns <игрок>");
-            return;
-        }
+        if (!IsAdmin(ctx)) return;
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .clearwarns <игрок|SteamID>"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         var em = world.EntityManager;
+        var by = ctx.Event.User.CharacterName.Value;
 
-        if (!ModerationHelpers.TryFindUser(em, playerName, out _, out var user))
-        {
-            ctx.Reply($"Игрок '{playerName}' не найден онлайн.");
-            return;
-        }
+        // Try online first, then offline, then treat input as SteamID directly
+        string steamId, charName;
+        if (ModerationHelpers.TryFindUser(em, playerName, out _, out var u))
+        { steamId = u.PlatformId.ToString(); charName = u.CharacterName.Value; }
+        else if (ModerationHelpers.TryFindUserOffline(em, playerName, out _, out u))
+        { steamId = u.PlatformId.ToString(); charName = u.CharacterName.Value; }
+        else
+        { ctx.Reply($"<color=#ffaa00>Игрок '{playerName}' не найден.</color>"); return; }
 
-        var steamId  = user.PlatformId.ToString();
-        var charName = user.CharacterName.Value;
         WarnDatabase.ClearWarns(steamId);
+        ModlogDatabase.Log(new ModlogEntry { Action = "clearwarns", SteamId = steamId, Name = charName, By = by, At = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
         ctx.Reply($"Предупреждения {charName} ({steamId}) очищены.");
     }
 
-    // ── .announce Message ─────────────────────────────────────────────────────
-    [Command("announce", description: "Broadcast an announcement")]
-    public void Announce(ChatCommandContext ctx, string message = "")
+    // ── .announce ─────────────────────────────────────────────────────────────
+    [Command("announce", description: "Broadcast: .announce <text...>")]
+    public void Announce(ChatCommandContext ctx,
+        string w0 = "", string w1 = "", string w2 = "", string w3 = "", string w4 = "",
+        string w5 = "", string w6 = "", string w7 = "", string w8 = "", string w9 = "")
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(message))
-        {
-            ctx.Reply("Использование: .announce <текст>");
-            return;
-        }
+        if (!IsAdmin(ctx)) return;
+        var message = string.Join(" ", new[] { w0, w1, w2, w3, w4, w5, w6, w7, w8, w9 }
+            .Where(x => !string.IsNullOrWhiteSpace(x)));
+        if (string.IsNullOrWhiteSpace(message)) { ctx.Reply("Использование: .announce <текст>"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
-        var em = world.EntityManager;
-
-        ModerationHelpers.BroadcastMessage(em,
+        ModerationHelpers.BroadcastMessage(world.EntityManager,
             $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n<color=#55ff55>📢 ОБЪЯВЛЕНИЕ:</color> <color=#ffffff>{message}</color>\n<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
         ctx.Reply("Announcement sent.");
     }
@@ -376,26 +356,20 @@ public class ModerationVCFCommands
     [Command("online", description: "List online players")]
     public void Online(ChatCommandContext ctx)
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
+        if (!IsAdmin(ctx)) return;
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         var em = world.EntityManager;
 
-        var qb    = new EntityQueryBuilder(Allocator.Temp);
+        var qb = new EntityQueryBuilder(Allocator.Temp);
         qb.AddAll(ComponentType.ReadOnly<User>());
         var query = qb.Build(em);
-
         try
         {
             var entities = query.ToEntityArray(Allocator.Temp);
             int count = 0;
             ctx.Reply("<color=#00ccff>━━━ Онлайн игроки ━━━</color>");
-
             foreach (var e in entities)
             {
                 try
@@ -403,21 +377,90 @@ public class ModerationVCFCommands
                     var u = em.GetComponentData<User>(e);
                     if (!u.IsConnected) continue;
                     count++;
-                    var name    = u.CharacterName.Value;
-                    var steam   = u.PlatformId.ToString();
-                    var isAdmin = u.IsAdmin ? " <color=#ff5555>[A]</color>" : "";
-                    ctx.Reply($"<color=#ffcc00>{name}</color> <color=#888888>({steam})</color>{isAdmin}");
+                    var adm = u.IsAdmin ? " <color=#ff5555>[A]</color>" : "";
+                    ctx.Reply($"<color=#ffcc00>{u.CharacterName.Value}</color> <color=#888888>({u.PlatformId})</color>{adm}");
                 }
                 catch { }
             }
             entities.Dispose();
-
             ctx.Reply($"<color=#00ccff>Всего: {count}</color>");
         }
-        finally
+        finally { query.Dispose(); qb.Dispose(); }
+    }
+
+    // ── .info ─────────────────────────────────────────────────────────────────
+    [Command("info", description: "Player info: .info <player|SteamID>")]
+    public void Info(ChatCommandContext ctx, string playerName = "")
+    {
+        if (!IsAdmin(ctx)) return;
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .info <игрок|SteamID>"); return; }
+
+        var world = ModerationHelpers.GetServerWorld();
+        if (world == null) { ctx.Reply("Server world not ready."); return; }
+        var em = world.EntityManager;
+
+        bool isOnline = ModerationHelpers.TryFindUser(em, playerName, out _, out var user);
+        if (!isOnline && !ModerationHelpers.TryFindUserOffline(em, playerName, out _, out user))
+        { ctx.Reply($"<color=#ffaa00>Игрок '{playerName}' не найден.</color>"); return; }
+
+        var charName = user.CharacterName.Value;
+        var steamId  = user.PlatformId.ToString();
+        var status   = isOnline ? "<color=#44ff44>онлайн</color>" : "<color=#888888>оффлайн</color>";
+        var adminTag = user.IsAdmin ? " <color=#ff5555>[ADMIN]</color>" : "";
+
+        ctx.Reply($"<color=#00ccff>━━━ {charName}{adminTag} ━━━</color>");
+        ctx.Reply($"SteamID: <color=#888888>{steamId}</color>  Статус: {status}");
+
+        var ban = BanDatabase.GetActiveBan(steamId);
+        if (ban != null)
+            ctx.Reply($"<color=#ff4444>БАН</color> до {FormatExpiry(ban.ExpiresAt)} — {ban.Reason} (от {ban.BannedBy})");
+
+        var mute = MuteDatabase.GetActiveMute(steamId);
+        if (mute != null)
+            ctx.Reply($"<color=#ff8800>МУТ</color> до {FormatExpiry(mute.ExpiresAt)} — {mute.Reason} (от {mute.MutedBy})");
+
+        var warnCount = WarnDatabase.GetWarnCount(steamId);
+        var warnColor = warnCount >= WarnDatabase.AutoBanThreshold ? "#ff4444" : warnCount > 0 ? "#ffaa00" : "#44ff44";
+        ctx.Reply($"Предупреждения: <color={warnColor}>{warnCount}/{WarnDatabase.AutoBanThreshold}</color>");
+
+        if (ban == null && mute == null && warnCount == 0)
+            ctx.Reply("<color=#44ff44>Нарушений не зафиксировано.</color>");
+    }
+
+    // ── .history ──────────────────────────────────────────────────────────────
+    [Command("history", description: "Moderation history: .history <player|SteamID>")]
+    public void History(ChatCommandContext ctx, string playerName = "")
+    {
+        if (!IsAdmin(ctx)) return;
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .history <игрок|SteamID>"); return; }
+
+        var world = ModerationHelpers.GetServerWorld();
+        if (world == null) { ctx.Reply("Server world not ready."); return; }
+        var em = world.EntityManager;
+
+        bool isOnline = ModerationHelpers.TryFindUser(em, playerName, out _, out var user);
+        if (!isOnline && !ModerationHelpers.TryFindUserOffline(em, playerName, out _, out user))
+        { ctx.Reply($"<color=#ffaa00>Игрок '{playerName}' не найден.</color>"); return; }
+
+        var charName = user.CharacterName.Value;
+        var steamId  = user.PlatformId.ToString();
+        var entries  = ModlogDatabase.GetForPlayer(steamId);
+
+        ctx.Reply($"<color=#00ccff>━━━ История: {charName} ({steamId}) ━━━</color>");
+        if (entries.Count == 0) { ctx.Reply("<color=#44ff44>Записей не найдено.</color>"); return; }
+
+        foreach (var e in entries)
         {
-            query.Dispose();
-            qb.Dispose();
+            var dt = DateTimeOffset.FromUnixTimeSeconds(e.At).ToOffset(TimeSpan.FromHours(3)).ToString("dd.MM HH:mm");
+            var actionColor = e.Action switch
+            {
+                "ban"   or "kick"   => "#ff4444",
+                "mute"  or "warn"   => "#ffaa00",
+                "unban" or "unmute" or "clearwarns" => "#44ff44",
+                _ => "#888888"
+            };
+            var exp = e.ExpiresAt.HasValue ? $" [{FormatRemaining(e.ExpiresAt)}]" : "";
+            ctx.Reply($"<color={actionColor}>[{e.Action.ToUpper()}]</color> <color=#888888>{dt}</color> от {e.By}{exp} — {e.Reason}");
         }
     }
 
@@ -425,66 +468,31 @@ public class ModerationVCFCommands
     [Command("banlist", description: "Show active bans")]
     public void BanList(ChatCommandContext ctx)
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
-
+        if (!IsAdmin(ctx)) return;
         var bans = BanDatabase.GetAll();
-        if (bans.Count == 0)
-        {
-            ctx.Reply("<color=#44ff44>Нет активных банов.</color>");
-            return;
-        }
-
+        if (bans.Count == 0) { ctx.Reply("<color=#44ff44>Нет активных банов.</color>"); return; }
         ctx.Reply($"<color=#ff4444>━━━ Активные баны ({bans.Count}) ━━━</color>");
         foreach (var b in bans)
-        {
-            var expiry = b.ExpiresAt.HasValue
-                ? DateTimeOffset.FromUnixTimeSeconds(b.ExpiresAt.Value).ToOffset(TimeSpan.FromHours(3)).ToString("dd.MM.yyyy HH:mm")
-                : "навсегда";
-            ctx.Reply($"<color=#ffcc00>{b.Name}</color> <color=#888888>({b.SteamId})</color> до <color=#ffffff>{expiry}</color> — {b.Reason}");
-        }
+            ctx.Reply($"<color=#ffcc00>{b.Name}</color> <color=#888888>({b.SteamId})</color> — {FormatExpiry(b.ExpiresAt)} — {b.Reason}");
     }
 
     // ── .mutelist ─────────────────────────────────────────────────────────────
     [Command("mutelist", description: "Show active mutes")]
     public void MuteList(ChatCommandContext ctx)
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
-
+        if (!IsAdmin(ctx)) return;
         var mutes = MuteDatabase.GetAll();
-        if (mutes.Count == 0)
-        {
-            ctx.Reply("<color=#44ff44>Нет активных мутов.</color>");
-            return;
-        }
-
+        if (mutes.Count == 0) { ctx.Reply("<color=#44ff44>Нет активных мутов.</color>"); return; }
         ctx.Reply($"<color=#ff8800>━━━ Активные муты ({mutes.Count}) ━━━</color>");
         foreach (var m in mutes)
-        {
-            var expiry = m.ExpiresAt.HasValue
-                ? DateTimeOffset.FromUnixTimeSeconds(m.ExpiresAt.Value).ToOffset(TimeSpan.FromHours(3)).ToString("dd.MM.yyyy HH:mm")
-                : "навсегда";
-            ctx.Reply($"<color=#ffcc00>{m.Name}</color> <color=#888888>({m.SteamId})</color> до <color=#ffffff>{expiry}</color> — {m.Reason}");
-        }
+            ctx.Reply($"<color=#ffcc00>{m.Name}</color> <color=#888888>({m.SteamId})</color> — {FormatExpiry(m.ExpiresAt)} — {m.Reason}");
     }
 
-    // ── .warnlist [PlayerName] ────────────────────────────────────────────────
-    [Command("warnlist", description: "Show warnings for a player or all")]
+    // ── .warnlist ─────────────────────────────────────────────────────────────
+    [Command("warnlist", description: "Show warnings: .warnlist [player]")]
     public void WarnList(ChatCommandContext ctx, string playerName = "")
     {
-        if (!ctx.Event.User.IsAdmin)
-        {
-            ctx.Reply("<color=red>* Вы не имеете права доступа к этой команде</color>");
-            return;
-        }
-
+        if (!IsAdmin(ctx)) return;
         List<WarnEntry> warns;
         if (string.IsNullOrEmpty(playerName))
         {
@@ -496,23 +504,51 @@ public class ModerationVCFCommands
             if (world == null) { ctx.Reply("Server world not ready."); return; }
             var em = world.EntityManager;
 
-            if (ModerationHelpers.TryFindUser(em, playerName, out _, out var user))
-                warns = WarnDatabase.GetWarnsForPlayer(user.PlatformId.ToString());
-            else
-                warns = WarnDatabase.GetAll().Where(w => w.Name.Equals(playerName, StringComparison.OrdinalIgnoreCase)).ToList();
+            bool found = ModerationHelpers.TryFindUser(em, playerName, out _, out var u)
+                      || ModerationHelpers.TryFindUserOffline(em, playerName, out _, out u);
+            warns = found
+                ? WarnDatabase.GetWarnsForPlayer(u.PlatformId.ToString())
+                : WarnDatabase.GetAll().Where(w => w.Name.Equals(playerName, StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
-        if (warns.Count == 0)
-        {
-            ctx.Reply("<color=#44ff44>Нет предупреждений.</color>");
-            return;
-        }
-
+        if (warns.Count == 0) { ctx.Reply("<color=#44ff44>Нет предупреждений.</color>"); return; }
         ctx.Reply($"<color=#ffaa00>━━━ Предупреждения ({warns.Count}) ━━━</color>");
         foreach (var w in warns)
         {
-            var date = DateTimeOffset.FromUnixTimeSeconds(w.WarnedAt).ToString("dd.MM HH:mm");
-            ctx.Reply($"<color=#ffcc00>{w.Name}</color> <color=#888888>[{date}]</color> от <color=#00ccff>{w.WarnedBy}</color> — {w.Reason}");
+            var dt = DateTimeOffset.FromUnixTimeSeconds(w.WarnedAt).ToOffset(TimeSpan.FromHours(3)).ToString("dd.MM HH:mm");
+            ctx.Reply($"<color=#ffcc00>{w.Name}</color> <color=#888888>[{dt}]</color> от <color=#00ccff>{w.WarnedBy}</color> — {w.Reason}");
+        }
+    }
+
+    // ── .chatfilter ───────────────────────────────────────────────────────────
+    [Command("chatfilter", description: "Chat filter: .chatfilter list|add|remove <word>")]
+    public void ChatFilterCmd(ChatCommandContext ctx, string action = "", string word = "")
+    {
+        if (!IsAdmin(ctx)) return;
+        switch (action.ToLowerInvariant())
+        {
+            case "list":
+                var words = ChatFilter.GetWords();
+                if (words.Count == 0) { ctx.Reply("<color=#44ff44>Фильтр пуст.</color>"); return; }
+                ctx.Reply($"<color=#ffaa00>━━━ Фильтр ({words.Count} слов) ━━━</color>");
+                ctx.Reply(string.Join(", ", words));
+                break;
+
+            case "add":
+                if (string.IsNullOrWhiteSpace(word)) { ctx.Reply("Использование: .chatfilter add <слово>"); return; }
+                if (ChatFilter.AddWord(word)) ctx.Reply($"<color=#44ff44>Слово '{word}' добавлено в фильтр.</color>");
+                else ctx.Reply($"<color=#ffaa00>Слово '{word}' уже в фильтре.</color>");
+                break;
+
+            case "remove":
+                if (string.IsNullOrWhiteSpace(word)) { ctx.Reply("Использование: .chatfilter remove <слово>"); return; }
+                if (ChatFilter.RemoveWord(word)) ctx.Reply($"<color=#44ff44>Слово '{word}' удалено из фильтра.</color>");
+                else ctx.Reply($"<color=#ffaa00>Слово '{word}' не найдено в фильтре.</color>");
+                break;
+
+            default:
+                ctx.Reply("Использование: .chatfilter list | .chatfilter add <слово> | .chatfilter remove <слово>");
+                break;
         }
     }
 }

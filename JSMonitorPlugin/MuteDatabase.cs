@@ -70,6 +70,24 @@ public static class MuteDatabase
         }
     }
 
+    /// <summary>
+    /// Unmute by SteamID or character name (case-insensitive), works for offline players.
+    /// Returns the entry that was removed, or null if not found.
+    /// </summary>
+    public static MuteEntry? UnmuteByNameOrSteamId(string nameOrSteamId)
+    {
+        lock (_lock)
+        {
+            var entry = _mutes.FirstOrDefault(m =>
+                m.SteamId == nameOrSteamId ||
+                m.Name.Equals(nameOrSteamId, StringComparison.OrdinalIgnoreCase));
+            if (entry == null) return null;
+            _mutes.RemoveAll(m => m.SteamId == entry.SteamId);
+            Save();
+            return entry;
+        }
+    }
+
     public static MuteEntry? GetActiveMute(string steamId)
     {
         lock (_lock)
