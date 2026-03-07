@@ -24,6 +24,7 @@
     <PackageReference Include="BepInEx.Core"         Version="6.0.0-be.733" IncludeAssets="compile" />
     <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
     <PackageReference Include="VRising.Unhollowed.Client" Version="1.1.*" />
+    <PackageReference Include="VRising.VampireCommandFramework" Version="0.10.3" IncludeAssets="compile" />
   </ItemGroup>
 
   <!-- Copy DLL to server plugins after build (adjust path as needed) -->

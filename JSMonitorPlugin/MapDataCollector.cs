@@ -137,38 +137,59 @@ public static class MapDataCollector
                     // Only online players
                     if (!user.IsConnected) continue;
 
-                    // Get character entity for position
-                    var charEntity = user.LocalCharacter.GetEntityOnServer();
-                    if (!em.Exists(charEntity)) continue;
-
-                    if (!em.HasComponent<LocalToWorld>(charEntity)) continue;
-                    var ltw = em.GetComponentData<LocalToWorld>(charEntity);
-                    var pos = ltw.Position;
+                    var name = user.CharacterName.Value;
+                    if (string.IsNullOrEmpty(name)) continue;
 
                     // Clan name (optional)
                     var clanName = "";
                     if (em.HasComponent<ClanTeam>(entity))
                     {
-                        var clan = em.GetComponentData<ClanTeam>(entity);
-                        clanName = clan.Name.Value;
+                        try
+                        {
+                            var clan = em.GetComponentData<ClanTeam>(entity);
+                            clanName = clan.Name.Value;
+                        }
+                        catch { }
                     }
 
-                    // Health (optional)
-                    float health = 0f;
-                    if (em.HasComponent<Health>(charEntity))
+                    // Try to get position from character entity
+                    float posX = 0f, posZ = 0f, health = 0f;
+                    bool hasPos = false;
+                    try
                     {
-                        var h = em.GetComponentData<Health>(charEntity);
-                        health = h.MaxHealth > 0 ? h.Value / h.MaxHealth : 0f;
+                        var charEntity = user.LocalCharacter.GetEntityOnServer();
+                        if (em.Exists(charEntity) && em.HasComponent<LocalToWorld>(charEntity))
+                        {
+                            var ltw = em.GetComponentData<LocalToWorld>(charEntity);
+                            posX   = ltw.Position.x;
+                            posZ   = ltw.Position.z;
+                            hasPos = true;
+
+                            if (em.HasComponent<Health>(charEntity))
+                            {
+                                var h = em.GetComponentData<Health>(charEntity);
+                                health = h.MaxHealth > 0 ? h.Value / h.MaxHealth : 0f;
+                            }
+                        }
+                        else
+                        {
+                            Plugin.Logger.LogInfo($"[JSMonitor] Player {name}: charEntity missing or no LocalToWorld — included without position.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Plugin.Logger.LogInfo($"[JSMonitor] Player {name}: position lookup failed ({ex.Message}) — included without position.");
                     }
 
                     result.Add(new PlayerEntry
                     {
-                        Name    = user.CharacterName.Value,
-                        Clan    = clanName,
-                        X       = pos.x,
-                        Z       = pos.z,
-                        Health  = health,
-                        IsAdmin = user.IsAdmin
+                        Name        = name,
+                        Clan        = clanName,
+                        X           = posX,
+                        Z           = posZ,
+                        Health      = health,
+                        IsAdmin     = user.IsAdmin,
+                        HasPosition = hasPos,
                     });
                 }
                 catch { /* skip this entity */ }
@@ -345,12 +366,13 @@ public class MapSnapshot
 
 public class PlayerEntry
 {
-    public string Name    { get; set; } = "";
-    public string Clan    { get; set; } = "";
-    public float  X       { get; set; }
-    public float  Z       { get; set; }
-    public float  Health  { get; set; }
-    public bool   IsAdmin { get; set; }
+    public string Name        { get; set; } = "";
+    public string Clan        { get; set; } = "";
+    public float  X           { get; set; }
+    public float  Z           { get; set; }
+    public float  Health      { get; set; }
+    public bool   IsAdmin     { get; set; }
+    public bool   HasPosition { get; set; }
 }
 
 public class CastleEntry

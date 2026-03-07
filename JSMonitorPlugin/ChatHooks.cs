@@ -85,7 +85,9 @@ public static class ChatHooks
     [HarmonyPatch(typeof(ChatMessageSystem), "OnUpdate")]
     static class ChatMessageSystemPatch
     {
-        static void Postfix()
+        // Prefix runs BEFORE ChatMessageSystem processes events.
+        // We remove muted/filtered messages here so the system never sees them.
+        static void Prefix()
         {
             try
             {
@@ -106,17 +108,46 @@ public static class ChatHooks
                         var msgText = ev.MessageText.Value ?? "";
 
                         var channel = MapChannel(ev.MessageType);
-                        if (string.IsNullOrEmpty(channel)) continue;   // skip System/Lore
+                        if (string.IsNullOrEmpty(channel)) continue;
 
-                        var playerName = ResolvePlayerName(em, ev.FromUser);
-                        var ts         = ev.TimeUTC / 1000;             // ms → s
+                        var steamId = ResolvePlayerSteamId(em, ev.FromUser);
+                        if (steamId == null) continue;
 
-                        PendingEvents.Enqueue(new ServerEvent(
-                            "chat", playerName, channel,
-                            msgText, ts));
+                        // ── Mute check ───────────────────────────────────────
+                        var mute = MuteDatabase.GetActiveMute(steamId);
+                        if (mute != null)
+                        {
+                            var userEntity = ResolveUserEntity(em, ev.FromUser);
+                            if (userEntity != Entity.Null)
+                            {
+                                var expiry = mute.ExpiresAt.HasValue
+                                    ? DateTimeOffset.FromUnixTimeSeconds(mute.ExpiresAt.Value).ToOffset(TimeSpan.FromHours(3)).ToString("dd.MM.yyyy HH:mm")
+                                    : "навсегда";
+                                ModerationHelpers.SendMessageToUser(em, userEntity,
+                                    $"<color=red>* Вы замьючены до {expiry}. Причина: {mute.Reason}</color>");
+                            }
+                            em.DestroyEntity(entity);
+                            continue;
+                        }
 
-                        Plugin.Logger.LogInfo(
-                            $"[JSMonitor] Chat [{channel}] {playerName}: {msgText}");
+                        // ── Chat filter check ────────────────────────────────
+                        var badWord = ChatFilter.CheckMessage(msgText);
+                        if (badWord != null)
+                        {
+                            var userEntity = ResolveUserEntity(em, ev.FromUser);
+                            if (userEntity != Entity.Null)
+                            {
+                                ModerationHelpers.SendMessageToUser(em, userEntity,
+                                    $"<color=red>* Ваше сообщение содержит запрещённое слово и было заблокировано.</color>");
+                            }
+                            em.DestroyEntity(entity);
+
+                            var playerName = ResolvePlayerName(em, ev.FromUser);
+                            PendingEvents.Enqueue(new ServerEvent(
+                                "moderation", "system", "filter",
+                                $"Blocked message from {playerName}: \"{msgText}\" (matched: {badWord})",
+                                DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+                        }
                     }
                     catch { }
                 }
@@ -126,6 +157,100 @@ public static class ChatHooks
             }
             catch { }
         }
+
+        // Postfix only logs and forwards surviving chat events to the backend.
+        static void Postfix()
+        {
+            try
+            {
+                var world = ServerWorld;
+                if (world == null) return;
+                var em = world.EntityManager;
+
+                var qb = new EntityQueryBuilder(Allocator.Temp);
+                qb.AddAll(ComponentType.ReadOnly<ChatMessageServerEvent>());
+                var query = qb.Build(em);
+
+                var entities = query.ToEntityArray(Allocator.Temp);
+                foreach (var entity in entities)
+                {
+                    try
+                    {
+                        var ev      = em.GetComponentData<ChatMessageServerEvent>(entity);
+                        var msgText = ev.MessageText.Value ?? "";
+                        var channel = MapChannel(ev.MessageType);
+                        if (string.IsNullOrEmpty(channel)) continue;
+
+                        var playerName = ResolvePlayerName(em, ev.FromUser);
+                        var ts         = ev.TimeUTC / 1000;
+
+                        PendingEvents.Enqueue(new ServerEvent("chat", playerName, channel, msgText, ts));
+                        Plugin.Logger.LogInfo($"[JSMonitor] Chat [{channel}] {playerName}: {msgText}");
+                    }
+                    catch { }
+                }
+                entities.Dispose();
+                query.Dispose();
+                qb.Dispose();
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>Resolves SteamID for a given NetworkId.</summary>
+    internal static string? ResolvePlayerSteamId(EntityManager em, NetworkId fromUser)
+    {
+        var qb = new EntityQueryBuilder(Allocator.Temp);
+        qb.AddAll(ComponentType.ReadOnly<User>());
+        qb.AddAll(ComponentType.ReadOnly<NetworkId>());
+        var query = qb.Build(em);
+        string? steamId = null;
+        try
+        {
+            var entities = query.ToEntityArray(Allocator.Temp);
+            foreach (var e in entities)
+            {
+                try
+                {
+                    var netId = em.GetComponentData<NetworkId>(e);
+                    if (netId.Equals(fromUser))
+                    {
+                        steamId = em.GetComponentData<User>(e).PlatformId.ToString();
+                        break;
+                    }
+                }
+                catch { }
+            }
+            entities.Dispose();
+        }
+        finally { query.Dispose(); qb.Dispose(); }
+        return steamId;
+    }
+
+    /// <summary>Resolves the User entity for a given NetworkId.</summary>
+    internal static Entity ResolveUserEntity(EntityManager em, NetworkId fromUser)
+    {
+        var qb = new EntityQueryBuilder(Allocator.Temp);
+        qb.AddAll(ComponentType.ReadOnly<User>());
+        qb.AddAll(ComponentType.ReadOnly<NetworkId>());
+        var query = qb.Build(em);
+        Entity result = Entity.Null;
+        try
+        {
+            var entities = query.ToEntityArray(Allocator.Temp);
+            foreach (var e in entities)
+            {
+                try
+                {
+                    var netId = em.GetComponentData<NetworkId>(e);
+                    if (netId.Equals(fromUser)) { result = e; break; }
+                }
+                catch { }
+            }
+            entities.Dispose();
+        }
+        finally { query.Dispose(); qb.Dispose(); }
+        return result;
     }
 
     // ── Harmony: connect / disconnect ─────────────────────────────────────────
@@ -162,12 +287,23 @@ public static class ChatHooks
                         var isConnect  = ev.Type == UserConnectionChangedType.Connected;
                         var ts         = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+                        // On connect: check ban database and kick immediately if banned
+                        if (isConnect && ModerationHelpers.CheckBanOnConnect(ev.UserEntity, em))
+                            continue; // don't forward a connect event for a banned player
+
                         PendingEvents.Enqueue(new ServerEvent(
                             isConnect ? "connect" : "disconnect",
                             playerName, "", "", ts));
 
                         Plugin.Logger.LogInfo(
                             $"[JSMonitor] {(isConnect ? "Connect" : "Disconnect")}: {playerName}");
+
+                        if (isConnect)
+                            ModerationHelpers.BroadcastMessage(em,
+                                $"<color=#44ff44>* Игрок</color> <color=#88ccff>{playerName}</color> <color=#44ff44>подключился к серверу.</color>");
+                        else
+                            ModerationHelpers.BroadcastMessage(em,
+                                $"<color=#ff8844>* Игрок</color> <color=#88ccff>{playerName}</color> <color=#ff8844>отключился от сервера.</color>");
                     }
                     catch { }
                 }
