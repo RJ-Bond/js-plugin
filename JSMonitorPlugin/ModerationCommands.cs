@@ -682,16 +682,11 @@ public static class ModerationHelpers
 
             var bindAll = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
 
-            // ── Approach 1: ServerBootstrapSystem.Kick(ulong, ConnectionStatusChangeReason, bool, long) ──
-            // Signature confirmed from log:
-            //   Kick(UInt64 platformId, ConnectionStatusChangeReason disconnectReason, Boolean logIfNotFound, Int64 bannedExpirationTick)
+            // ── Approach 1: ServerBootstrapSystem via GetExistingSystemManaged ─────────
             var platformId = em.GetComponentData<User>(userEntity).PlatformId;
-            foreach (var sys in world.Systems)
+            var sbs = world.GetExistingSystemManaged<ServerBootstrapSystem>();
+            if (sbs != null)
             {
-                if (sys == null) continue;
-                var sysType = sys.GetType();
-                if (sysType.Name != "ServerBootstrapSystem") continue;
-
                 // Find ConnectionStatusChangeReason type dynamically
                 Type? cscrType = null;
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
@@ -699,30 +694,39 @@ public static class ModerationHelpers
                     cscrType = asm.GetType("ProjectM.Network.ConnectionStatusChangeReason");
                     if (cscrType != null) break;
                 }
-                if (cscrType == null)
+
+                if (cscrType != null)
+                {
+                    var kickMethod = sbs.GetType().GetMethod("Kick", bindAll, null,
+                        new[] { typeof(ulong), cscrType, typeof(bool), typeof(long) }, null);
+                    if (kickMethod != null)
+                    {
+                        var reasonName = banExpirationTick > 0 ? "Banned" : "Kicked";
+                        object reasonVal;
+                        try { reasonVal = System.Enum.Parse(cscrType, reasonName); }
+                        catch { reasonVal = System.Enum.ToObject(cscrType, banExpirationTick > 0 ? 3 : 1); }
+                        Plugin.Logger.LogInfo($"[JSMonitor] Invoking ServerBootstrapSystem.Kick(platformId={platformId}, reason={reasonVal}, banTick={banExpirationTick})");
+                        kickMethod.Invoke(sbs, new object[] { platformId, reasonVal, true, banExpirationTick });
+                        return;
+                    }
+
+                    // Log available Kick overloads to help diagnose signature mismatches
+                    foreach (var m in sbs.GetType().GetMethods(bindAll))
+                        if (m.Name == "Kick")
+                            Plugin.Logger.LogInfo($"[JSMonitor] Kick overload: ({string.Join(", ", System.Array.ConvertAll(m.GetParameters(), p => $"{p.ParameterType.Name} {p.Name}"))})");
+                    Plugin.Logger.LogWarning("[JSMonitor] ServerBootstrapSystem.Kick — signature mismatch, see overloads above.");
+                }
+                else
                 {
                     Plugin.Logger.LogWarning("[JSMonitor] ConnectionStatusChangeReason type not found.");
-                    break;
                 }
-
-                var kickMethod = sysType.GetMethod("Kick", bindAll, null,
-                    new[] { typeof(ulong), cscrType, typeof(bool), typeof(long) }, null);
-                if (kickMethod != null)
-                {
-                    // Look up enum values by name; fall back to numeric if not found
-                    var reasonName = banExpirationTick > 0 ? "Banned" : "Kicked";
-                    object reasonVal;
-                    try { reasonVal = System.Enum.Parse(cscrType, reasonName); }
-                    catch { reasonVal = System.Enum.ToObject(cscrType, banExpirationTick > 0 ? 3 : 1); }
-                    Plugin.Logger.LogInfo($"[JSMonitor] Invoking ServerBootstrapSystem.Kick(platformId={platformId}, reason={reasonVal}, true, {banExpirationTick})");
-                    kickMethod.Invoke(sys, new object[] { platformId, reasonVal, true, banExpirationTick });
-                    return;
-                }
-                Plugin.Logger.LogWarning("[JSMonitor] ServerBootstrapSystem found but Kick method signature mismatch.");
-                break;
+            }
+            else
+            {
+                Plugin.Logger.LogWarning("[JSMonitor] GetExistingSystemManaged<ServerBootstrapSystem>() returned null.");
             }
 
-            Plugin.Logger.LogWarning("[JSMonitor] KickUser: ServerBootstrapSystem.Kick not found — falling back.");
+            Plugin.Logger.LogWarning("[JSMonitor] KickUser: falling back to IsConnected = false.");
 
             // ── Approach 2: direct User.IsConnected = false ───────────────────
             Plugin.Logger.LogInfo("[JSMonitor] KickUser: Trying direct User.IsConnected = false");
