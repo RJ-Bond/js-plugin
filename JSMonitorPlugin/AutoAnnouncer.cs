@@ -86,7 +86,7 @@ public class AutoAnnouncer : MonoBehaviour
                 {
                     ModerationHelpers.BroadcastMessage(em,
                         $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n" +
-                        $"<color=#55ff55>📢</color> {ann.Message}\n" +
+                        $"<color=#55ff55>[!]</color> {ann.Message}\n" +
                         $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
 
                     lock (_lock)

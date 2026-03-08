@@ -348,7 +348,7 @@ public class ModerationVCFCommands
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
         ModerationHelpers.BroadcastMessage(world.EntityManager,
-            $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n<color=#55ff55>📢 ОБЪЯВЛЕНИЕ:</color> <color=#ffffff>{message}</color>\n<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
+            $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n<color=#55ff55>[!] ОБЪЯВЛЕНИЕ:</color> <color=#ffffff>{message}</color>\n<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
         ctx.Reply("Announcement sent.");
     }
 
@@ -384,6 +384,69 @@ public class ModerationVCFCommands
             }
             entities.Dispose();
             ctx.Reply($"<color=#00ccff>Всего: {count}</color>");
+        }
+        finally { query.Dispose(); qb.Dispose(); }
+    }
+
+    // ── .a (admin chat) ───────────────────────────────────────────────────────
+    [Command("a", description: "Admin chat: .a <text...>  (visible to admins only)")]
+    public void AdminChat(ChatCommandContext ctx,
+        string w0 = "", string w1 = "", string w2 = "", string w3 = "", string w4 = "",
+        string w5 = "", string w6 = "", string w7 = "", string w8 = "", string w9 = "")
+    {
+        if (!IsAdmin(ctx)) return;
+        var message = string.Join(" ", new[] { w0, w1, w2, w3, w4, w5, w6, w7, w8, w9 }
+            .Where(x => !string.IsNullOrWhiteSpace(x)));
+        if (string.IsNullOrWhiteSpace(message)) { ctx.Reply("Использование: .a <текст>"); return; }
+
+        var world = ModerationHelpers.GetServerWorld();
+        if (world == null) { ctx.Reply("Server world not ready."); return; }
+        var em = world.EntityManager;
+
+        var sender = ctx.Event.User.CharacterName.Value;
+        var formatted = $"<color=#ff5555>[ADMIN]</color> <color=#ffcc00>{sender}</color><color=#888888>:</color> <color=#ffffff>{message}</color>";
+
+        int sent = ModerationHelpers.SendMessageToAdmins(em, formatted);
+        Plugin.Logger.LogInfo($"[JSMonitor] AdminChat from {sender} ({sent} recipients): {message}");
+    }
+
+    // ── .admins ───────────────────────────────────────────────────────────────
+    [Command("admins", description: "List online admins")]
+    public void Admins(ChatCommandContext ctx)
+    {
+        if (!IsAdmin(ctx)) return;
+
+        var world = ModerationHelpers.GetServerWorld();
+        if (world == null) { ctx.Reply("Server world not ready."); return; }
+        var em = world.EntityManager;
+
+        var qb = new EntityQueryBuilder(Allocator.Temp);
+        qb.AddAll(ComponentType.ReadOnly<User>());
+        var query = qb.Build(em);
+        try
+        {
+            var entities = query.ToEntityArray(Allocator.Temp);
+            var admins = new List<string>();
+            foreach (var e in entities)
+            {
+                try
+                {
+                    var u = em.GetComponentData<User>(e);
+                    if (u.IsConnected && u.IsAdmin)
+                        admins.Add(u.CharacterName.Value);
+                }
+                catch { }
+            }
+            entities.Dispose();
+
+            if (admins.Count == 0)
+                ctx.Reply("<color=#ffaa00>Нет администраторов онлайн.</color>");
+            else
+            {
+                ctx.Reply($"<color=#ff5555>━━━ Администраторы онлайн ({admins.Count}) ━━━</color>");
+                foreach (var name in admins)
+                    ctx.Reply($"<color=#ffcc00>{name}</color>");
+            }
         }
         finally { query.Dispose(); qb.Dispose(); }
     }
@@ -546,15 +609,100 @@ public class ModerationVCFCommands
         ctx.Reply("<color=#ffcc00>[Игроки]</color>");
         ctx.Reply("<color=#ffffff>.kick</color> <color=#888888><игрок> [причина]</color>  — частичное имя поддерживается");
         ctx.Reply("<color=#ffffff>.online</color>  — список онлайн со SteamID");
+        ctx.Reply("<color=#ffffff>.admins</color>  — список администраторов онлайн");
         ctx.Reply("<color=#ffffff>.info</color> <color=#888888><игрок|SteamID></color>  — статус, баны, муты, варны");
         ctx.Reply("<color=#ffffff>.history</color> <color=#888888><игрок|SteamID></color>  — история нарушений");
 
         ctx.Reply("<color=#ffcc00>[Прочее]</color>");
+        ctx.Reply("<color=#ffffff>.a</color> <color=#888888><текст...></color>  — чат только для администраторов");
+        ctx.Reply("<color=#ffffff>.autoadmin</color> <color=#888888>list|add|remove <игрок|SteamID></color>  — авто-вход для администраторов");
         ctx.Reply("<color=#ffffff>.announce</color> <color=#888888><текст...></color>  — объявление всем (до 10 слов)");
         ctx.Reply("<color=#ffffff>.chatfilter</color> <color=#888888>list|add|remove <слово></color>  — фильтр чата");
         ctx.Reply("<color=#ffffff>.js-help</color>  — эта справка");
 
         ctx.Reply("<color=#00ccff>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</color>");
+    }
+
+    // ── .autoadmin ────────────────────────────────────────────────────────────
+    [Command("autoadmin", description: "Auto-admin list: .autoadmin add|remove|list <player|SteamID>")]
+    public void AutoAdmin(ChatCommandContext ctx, string action = "", string target = "")
+    {
+        if (!IsAdmin(ctx)) return;
+        var by = ctx.Event.User.CharacterName.Value;
+
+        switch (action.ToLowerInvariant())
+        {
+            case "list":
+                var all = AdminDatabase.GetAll();
+                if (all.Count == 0) { ctx.Reply("<color=#44ff44>Список авто-админов пуст.</color>"); return; }
+                ctx.Reply($"<color=#ff5555>━━━ Авто-администраторы ({all.Count}) ━━━</color>");
+                foreach (var e in all)
+                {
+                    var dt = DateTimeOffset.FromUnixTimeSeconds(e.AddedAt).ToOffset(TimeSpan.FromHours(3)).ToString("dd.MM.yyyy");
+                    var nameTag = string.IsNullOrEmpty(e.Name) ? "" : $" <color=#ffcc00>{e.Name}</color>";
+                    ctx.Reply($"<color=#888888>{e.SteamId}</color>{nameTag} — добавлен <color=#00ccff>{e.AddedBy}</color> {dt}");
+                }
+                break;
+
+            case "add":
+            {
+                if (string.IsNullOrWhiteSpace(target)) { ctx.Reply("Использование: .autoadmin add <игрок|SteamID>"); return; }
+
+                var world = ModerationHelpers.GetServerWorld();
+                if (world == null) { ctx.Reply("Server world not ready."); return; }
+                var em = world.EntityManager;
+
+                string steamId, charName;
+
+                // SteamID passed directly
+                if (target.Length == 17 && target.All(char.IsDigit))
+                {
+                    steamId = target;
+                    // Try to resolve name from ECS (online or offline)
+                    charName = "";
+                    if (ModerationHelpers.TryFindUser(em, target, out _, out var u1) ||
+                        ModerationHelpers.TryFindUserOffline(em, target, out _, out u1))
+                        charName = u1.CharacterName.Value;
+                }
+                else
+                {
+                    // Name — look up online first, then offline
+                    if (!ModerationHelpers.TryFindUser(em, target, out _, out var u2) &&
+                        !ModerationHelpers.TryFindUserOffline(em, target, out _, out u2))
+                    { ctx.Reply($"<color=#ffaa00>Игрок '{target}' не найден. Для оффлайн-игроков используйте SteamID.</color>"); return; }
+                    steamId  = u2.PlatformId.ToString();
+                    charName = u2.CharacterName.Value;
+                }
+
+                if (AdminDatabase.Add(steamId, charName, by))
+                {
+                    var label = string.IsNullOrEmpty(charName) ? steamId : $"{charName} ({steamId})";
+                    ctx.Reply($"<color=#44ff44>{label} добавлен в авто-админы.</color>");
+                }
+                else
+                    ctx.Reply($"<color=#ffaa00>SteamID {steamId} уже в списке.</color>");
+                break;
+            }
+
+            case "remove":
+            {
+                if (string.IsNullOrWhiteSpace(target)) { ctx.Reply("Использование: .autoadmin remove <игрок|SteamID>"); return; }
+
+                var entry = AdminDatabase.RemoveByNameOrSteamId(target);
+                if (entry != null)
+                {
+                    var label = string.IsNullOrEmpty(entry.Name) ? entry.SteamId : $"{entry.Name} ({entry.SteamId})";
+                    ctx.Reply($"<color=#44ff44>{label} удалён из авто-админов.</color>");
+                }
+                else
+                    ctx.Reply($"<color=#ffaa00>'{target}' не найден в списке авто-админов.</color>");
+                break;
+            }
+
+            default:
+                ctx.Reply("Использование: .autoadmin list | .autoadmin add <игрок|SteamID> | .autoadmin remove <игрок|SteamID>");
+                break;
+        }
     }
 
     // ── .chatfilter ───────────────────────────────────────────────────────────
@@ -824,6 +972,82 @@ public static class ModerationHelpers
         {
             Plugin.Logger.LogWarning($"[JSMonitor] KickUser error: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Grants admin rights to a connected player via AdminAuthSystem, then falls back
+    /// to directly setting User.IsAdmin = true on the ECS component.
+    /// </summary>
+    public static bool GrantAdminRights(EntityManager em, Entity userEntity, ulong platformId)
+    {
+        try
+        {
+            var world = GetServerWorld();
+            if (world == null) return false;
+
+            // Approach 1: call ServerBootstrapSystem.AddAdmin(ulong) via reflection
+            var sbs = world.GetExistingSystemManaged<ServerBootstrapSystem>();
+            if (sbs != null)
+            {
+                var bindAll = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var addAdminMethod = sbs.GetType().GetMethod("AddAdmin", bindAll, null, new[] { typeof(ulong) }, null);
+                if (addAdminMethod != null)
+                {
+                    addAdminMethod.Invoke(sbs, new object[] { platformId });
+                    Plugin.Logger.LogInfo($"[JSMonitor] GrantAdminRights: ServerBootstrapSystem.AddAdmin({platformId}) invoked.");
+                    return true;
+                }
+
+                // Log available methods to help diagnose if AddAdmin signature differs
+                foreach (var m in sbs.GetType().GetMethods(bindAll))
+                    if (m.Name.IndexOf("Admin", StringComparison.OrdinalIgnoreCase) >= 0)
+                        Plugin.Logger.LogInfo($"[JSMonitor] SBS admin method: {m.Name}({string.Join(", ", System.Array.ConvertAll(m.GetParameters(), p => $"{p.ParameterType.Name} {p.Name}"))})");
+
+                Plugin.Logger.LogWarning("[JSMonitor] GrantAdminRights: AddAdmin not found, falling back to SetComponentData.");
+            }
+
+            // Approach 2: directly set IsAdmin on the User component
+            var user = em.GetComponentData<User>(userEntity);
+            user.IsAdmin = true;
+            em.SetComponentData(userEntity, user);
+            Plugin.Logger.LogInfo($"[JSMonitor] GrantAdminRights: set User.IsAdmin=true for {platformId} via SetComponentData.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Logger.LogWarning($"[JSMonitor] GrantAdminRights error: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Sends a message to all currently connected admins.
+    /// Returns the number of recipients.
+    /// </summary>
+    public static int SendMessageToAdmins(EntityManager em, string text)
+    {
+        int count = 0;
+        var qb = new EntityQueryBuilder(Allocator.Temp);
+        qb.AddAll(ComponentType.ReadOnly<User>());
+        var query = qb.Build(em);
+        try
+        {
+            var entities = query.ToEntityArray(Allocator.Temp);
+            foreach (var e in entities)
+            {
+                try
+                {
+                    var u = em.GetComponentData<User>(e);
+                    if (!u.IsConnected || !u.IsAdmin) continue;
+                    SendMessageToUser(em, e, text);
+                    count++;
+                }
+                catch { }
+            }
+            entities.Dispose();
+        }
+        finally { query.Dispose(); qb.Dispose(); }
+        return count;
     }
 
     /// <summary>Sends a server-system message to a specific user.</summary>

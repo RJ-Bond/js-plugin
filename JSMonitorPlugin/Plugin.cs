@@ -69,6 +69,7 @@ public class Plugin : BasePlugin
         WarnDatabase.Load();
         ChatFilter.Load();
         ModlogDatabase.Load();
+        AdminDatabase.Load();
 
         if (string.IsNullOrWhiteSpace(JSMonitorUrl.Value) || string.IsNullOrWhiteSpace(ApiKey.Value) || ServerId.Value <= 0)
         {

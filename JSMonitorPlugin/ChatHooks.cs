@@ -111,6 +111,16 @@ public static class ChatHooks
                         var channel = MapChannel(ev.MessageType);
                         if (string.IsNullOrEmpty(channel)) continue;
 
+                        // ── Suppress command messages from public chat ────────
+                        // VCF queues the command in its own Prefix but does not
+                        // destroy the entity, so ChatMessageSystem would broadcast
+                        // the raw ".command text" to all players. We destroy it here.
+                        if (msgText.StartsWith("."))
+                        {
+                            em.DestroyEntity(entity);
+                            continue;
+                        }
+
                         var steamId = ResolvePlayerSteamId(em, ev.FromUser);
                         if (steamId == null) continue;
 
@@ -296,6 +306,19 @@ public static class ChatHooks
                         if (isConnect && ModerationHelpers.CheckBanOnConnect(ev.UserEntity, em))
                             continue;
 
+                        // Auto-admin: grant rights if SteamID is in the trusted list
+                        if (isConnect && !user.IsAdmin)
+                        {
+                            var sid = user.PlatformId.ToString();
+                            if (AdminDatabase.IsAutoAdmin(sid))
+                            {
+                                ModerationHelpers.GrantAdminRights(em, ev.UserEntity, user.PlatformId);
+                                Plugin.Logger.LogInfo($"[JSMonitor] Auto-admin granted to {playerName} ({sid})");
+                                // _adminState will be seeded as false below, so the welcome message
+                                // will fire naturally when IsAdmin flips in the next detection loop.
+                            }
+                        }
+
                         PendingEvents.Enqueue(new ServerEvent(
                             isConnect ? "connect" : "disconnect",
                             playerName, "", "", ts));
@@ -353,6 +376,16 @@ public static class ChatHooks
                                 "<color=#ffffff>* .js-help</color>");
 
                             Plugin.Logger.LogInfo($"[JSMonitor] Admin auth detected: {name}");
+
+                            // Auto-add to AdminDatabase on first successful adminauth
+                            var sid = u.PlatformId.ToString();
+                            if (!AdminDatabase.IsAutoAdmin(sid))
+                            {
+                                AdminDatabase.Add(sid, name, "auto");
+                                ModerationHelpers.SendMessageToUser(em, ue,
+                                    "<color=#44ff44>* Вы добавлены в список авто-авторизации. При следующем входе права будут выданы автоматически.</color>");
+                                Plugin.Logger.LogInfo($"[JSMonitor] Auto-admin added on first auth: {name} ({sid})");
+                            }
                         }
                     }
                     catch { }
