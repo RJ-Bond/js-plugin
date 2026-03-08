@@ -60,7 +60,7 @@ public class AutoAnnouncer : MonoBehaviour
     static void SendAnnouncement(Unity.Entities.EntityManager em, RemoteAnnouncement ann)
     {
         ModerationHelpers.BroadcastMessage(em,
-            $"<color=#55ff55>[!]</color> {ann.Message}\n" +
+            $"{ann.Message}\n" +
             $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
         lock (_lock)
         {
