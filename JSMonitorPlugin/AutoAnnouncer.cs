@@ -29,6 +29,8 @@ public class AutoAnnouncer : MonoBehaviour
     // Thread-safe list updated from push coroutine
     static readonly object _lock = new();
     static List<RemoteAnnouncement> _announcements = [];
+    static bool _randomOrder = false;
+    static readonly Random _rng = new();
 
     public void Start()
     {
@@ -37,7 +39,7 @@ public class AutoAnnouncer : MonoBehaviour
     }
 
     /// <summary>Called by MapPushCoroutine after each successful push.</summary>
-    public static void UpdateAnnouncements(List<RemoteAnnouncement> incoming)
+    public static void UpdateAnnouncements(List<RemoteAnnouncement> incoming, bool randomOrder = false)
     {
         lock (_lock)
         {
@@ -50,8 +52,22 @@ public class AutoAnnouncer : MonoBehaviour
                 now.Add(inc);
             }
             _announcements = now;
+            _randomOrder   = randomOrder;
         }
-        Plugin.Logger.LogInfo($"[JSMonitor] AutoAnnouncer: {incoming.Count} announcement(s) loaded from server.");
+        Plugin.Logger.LogInfo($"[JSMonitor] AutoAnnouncer: {incoming.Count} announcement(s) loaded from server. RandomOrder={randomOrder}");
+    }
+
+    static void SendAnnouncement(Unity.Entities.EntityManager em, RemoteAnnouncement ann)
+    {
+        ModerationHelpers.BroadcastMessage(em,
+            $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n" +
+            $"<color=#55ff55>[!]</color> {ann.Message}\n" +
+            $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
+        lock (_lock)
+        {
+            var a = _announcements.Find(x => x.Id == ann.Id);
+            if (a != null) a.LastSentAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        }
     }
 
     IEnumerator AnnounceLoop()
@@ -60,17 +76,19 @@ public class AutoAnnouncer : MonoBehaviour
         {
             yield return new WaitForSeconds(5); // check every 5 seconds
 
-            List<RemoteAnnouncement> toSend;
+            List<RemoteAnnouncement> candidates;
+            bool random;
             var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
             lock (_lock)
             {
-                toSend = _announcements.FindAll(a =>
+                candidates = _announcements.FindAll(a =>
                     a.IntervalSeconds > 0 &&
                     nowSec - a.LastSentAt >= a.IntervalSeconds);
+                random = _randomOrder;
             }
 
-            if (toSend.Count == 0) continue;
+            if (candidates.Count == 0) continue;
 
             World? serverWorld = null;
             if (World.s_AllWorlds != null)
@@ -80,24 +98,29 @@ public class AutoAnnouncer : MonoBehaviour
 
             var em = serverWorld.EntityManager;
 
-            foreach (var ann in toSend)
+            if (random)
             {
+                // Random mode: pick one announcement at random from those that are due
                 try
                 {
-                    ModerationHelpers.BroadcastMessage(em,
-                        $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n" +
-                        $"<color=#55ff55>[!]</color> {ann.Message}\n" +
-                        $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
-
-                    lock (_lock)
-                    {
-                        var a = _announcements.Find(x => x.Id == ann.Id);
-                        if (a != null) a.LastSentAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                    }
+                    var pick = candidates[_rng.Next(candidates.Count)];
+                    SendAnnouncement(em, pick);
                 }
                 catch (Exception ex)
                 {
                     Plugin.Logger.LogWarning($"[JSMonitor] AutoAnnouncer send error: {ex.Message}");
+                }
+            }
+            else
+            {
+                // Normal mode: send all due announcements in order
+                foreach (var ann in candidates)
+                {
+                    try { SendAnnouncement(em, ann); }
+                    catch (Exception ex)
+                    {
+                        Plugin.Logger.LogWarning($"[JSMonitor] AutoAnnouncer send error: {ex.Message}");
+                    }
                 }
             }
         }

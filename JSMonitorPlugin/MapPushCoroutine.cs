@@ -176,7 +176,7 @@ public class MapPushCoroutine : MonoBehaviour
                         Message         = a.Message,
                         IntervalSeconds = a.IntervalSeconds,
                     });
-                AutoAnnouncer.UpdateAnnouncements(list);
+                AutoAnnouncer.UpdateAnnouncements(list, resp.AnnouncementsRandom);
             }
 
             if (resp?.Commands == null || resp.Commands.Count == 0) return;
@@ -207,6 +207,13 @@ public class MapPushCoroutine : MonoBehaviour
                         case "unban":
                             if (!string.IsNullOrEmpty(cmd.SteamId))
                                 BanDatabase.Unban(cmd.SteamId);
+                            break;
+                        case "announce":
+                            if (!string.IsNullOrEmpty(cmd.Reason))
+                                ModerationHelpers.BroadcastMessage(em,
+                                    $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n" +
+                                    $"<color=#55ff55>[!]</color> {cmd.Reason}\n" +
+                                    $"<color=#ff5555>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
                             break;
                     }
                 }
@@ -340,6 +347,9 @@ public class PushResponse
 
     [JsonPropertyName("announcements")]
     public List<AnnouncementPayload>? Announcements { get; set; }
+
+    [JsonPropertyName("announcements_random")]
+    public bool AnnouncementsRandom { get; set; }
 }
 
 public class AnnouncementPayload
