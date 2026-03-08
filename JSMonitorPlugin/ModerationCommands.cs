@@ -115,7 +115,7 @@ public class ModerationVCFCommands
         string r0 = "", string r1 = "", string r2 = "", string r3 = "", string r4 = "")
     {
         if (!IsAdmin(ctx)) return;
-        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .kick <игрок> [причина]"); return; }
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("<color=green>* [ИСПОЛЬЗУЙТЕ]: .kick <ник игрока> [причина]</color>"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
@@ -128,7 +128,7 @@ public class ModerationVCFCommands
         var steamId  = user.PlatformId.ToString();
 
         if (charName.Equals(by, StringComparison.OrdinalIgnoreCase))
-        { ctx.Reply("<color=#ffaa00>Вы не можете кикнуть себя.</color>"); return; }
+        { ctx.Reply("<color=yellow>* Вы не можете кикнуть себя.</color>"); return; }
 
         var reason = BuildReason(r0, r1, r2, r3, r4, "kicked by admin");
 
@@ -148,7 +148,7 @@ public class ModerationVCFCommands
     {
         if (!IsAdmin(ctx)) return;
         if (string.IsNullOrWhiteSpace(playerName) || string.IsNullOrWhiteSpace(duration))
-        { ctx.Reply("Использование: .ban <игрок|SteamID> <длительность> [причина]  (пример: .ban Vasya 1d читерство)"); return; }
+        { ctx.Reply("<color=green>* [ИСПОЛЬЗУЙТЕ]: .ban <игрок|SteamID> <длительность> [причина]  (пример: .ban Vasya 1d читерство)</color>"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
@@ -163,7 +163,7 @@ public class ModerationVCFCommands
         var steamId  = user.PlatformId.ToString();
 
         if (charName.Equals(by, StringComparison.OrdinalIgnoreCase))
-        { ctx.Reply("<color=#ffaa00>Вы не можете забанить себя.</color>"); return; }
+        { ctx.Reply("<color=yellow>* Вы не можете забанить себя.</color>"); return; }
 
         var reason    = BuildReason(r0, r1, r2, r3, r4, "banned by admin");
         var expiresAt = BanDatabase.ParseDuration(duration);
@@ -188,7 +188,7 @@ public class ModerationVCFCommands
     public void Unban(ChatCommandContext ctx, string playerName = "")
     {
         if (!IsAdmin(ctx)) return;
-        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("Использование: .unban <игрок|SteamID>"); return; }
+        if (string.IsNullOrWhiteSpace(playerName)) { ctx.Reply("<color=green>* [ИСПОЛЬЗУЙТЕ]: .unban <игрок|SteamID></color>"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
@@ -213,7 +213,7 @@ public class ModerationVCFCommands
     {
         if (!IsAdmin(ctx)) return;
         if (string.IsNullOrWhiteSpace(playerName) || string.IsNullOrWhiteSpace(duration))
-        { ctx.Reply("Использование: .mute <игрок> <длительность> [причина]"); return; }
+        { ctx.Reply("<color=green>* [ИСПОЛЬЗУЙТЕ]: .mute <ник игрока> <длительность> [причина]</color>"); return; }
 
         var world = ModerationHelpers.GetServerWorld();
         if (world == null) { ctx.Reply("Server world not ready."); return; }
@@ -404,7 +404,7 @@ public class ModerationVCFCommands
         var em = world.EntityManager;
 
         var sender = ctx.Event.User.CharacterName.Value;
-        var formatted = $"<color=#ff5555>[ADMIN]</color> <color=#ffcc00>{sender}</color><color=#888888>:</color> <color=#ffffff>{message}</color>";
+        var formatted = $"<color=#ff5555>[АДМИН]</color> <color=#ffcc00>{sender}</color><color=#888888>:</color> <color=#ffffff>{message}</color>";
 
         int sent = ModerationHelpers.SendMessageToAdmins(em, formatted);
         Plugin.Logger.LogInfo($"[JSMonitor] AdminChat from {sender} ({sent} recipients): {message}");
@@ -469,7 +469,7 @@ public class ModerationVCFCommands
         var charName = user.CharacterName.Value;
         var steamId  = user.PlatformId.ToString();
         var status   = isOnline ? "<color=#44ff44>онлайн</color>" : "<color=#888888>оффлайн</color>";
-        var adminTag = user.IsAdmin ? " <color=#ff5555>[ADMIN]</color>" : "";
+        var adminTag = user.IsAdmin ? " <color=#ff5555>[АДМИН]</color>" : "";
 
         ctx.Reply($"<color=#00ccff>━━━ {charName}{adminTag} ━━━</color>");
         ctx.Reply($"SteamID: <color=#888888>{steamId}</color>  Статус: {status}");
@@ -700,7 +700,7 @@ public class ModerationVCFCommands
             }
 
             default:
-                ctx.Reply("Использование: .autoadmin list | .autoadmin add <игрок|SteamID> | .autoadmin remove <игрок|SteamID>");
+                ctx.Reply("<color=green>* [ИСПОЛЬЗУЙТЕ]: .autoadmin list | .autoadmin add <игрок|SteamID> | .autoadmin remove <игрок|SteamID></color>");
                 break;
         }
     }
@@ -732,7 +732,7 @@ public class ModerationVCFCommands
                 break;
 
             default:
-                ctx.Reply("Использование: .chatfilter list | .chatfilter add <слово> | .chatfilter remove <слово>");
+                ctx.Reply("<color=green>* [ИСПОЛЬЗУЙТЕ]: .chatfilter list | .chatfilter add <слово> | .chatfilter remove <слово></color>");
                 break;
         }
     }
@@ -775,7 +775,7 @@ public static class ModerationHelpers
             // Send detailed ban notification before kicking
             SendMessageToUser(em, userEntity,
                 $"<color=#ff0000>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n" +
-                $"<color=#ff0000>⛔ ВЫ ЗАБАНЕНЫ НА ЭТОМ СЕРВЕРЕ</color>\n" +
+                $"<color=#ff0000>* ВЫ БЫЛИ ЗАБАНЕНЫ НА СЕРВЕРЕ!</color>\n" +
                 $"<color=#ffaa00>Срок бана:</color> <color=#ffffff>{expMsg}</color>\n" +
                 $"<color=#ffaa00>Причина:</color> <color=#ffffff>{ban.Reason}</color>\n" +
                 $"<color=#ffaa00>Забанил:</color> <color=#ffffff>{ban.BannedBy}</color>\n" +
@@ -886,7 +886,7 @@ public static class ModerationHelpers
             {
                 SendMessageToUser(em, userEntity,
                     $"<color=#ff4444>━━━━━━━━━━━━━━━━━━━━━━━━</color>\n" +
-                    $"<color=#ff4444>Вы были кикнуты с сервера</color>\n" +
+                    $"<color=#ff4444>* Вы были кикнуты с сервера.</color>\n" +
                     $"<color=#ff8800>Причина: {reason}</color>\n" +
                     $"<color=#ff4444>━━━━━━━━━━━━━━━━━━━━━━━━</color>");
             }
