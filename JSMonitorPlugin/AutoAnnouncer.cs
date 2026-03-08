@@ -30,7 +30,7 @@ public class AutoAnnouncer : MonoBehaviour
     static readonly object _lock = new();
     static List<RemoteAnnouncement> _announcements = [];
     static bool _randomOrder = false;
-    static readonly Random _rng = new();
+    static readonly System.Random _rng = new();
 
     public void Start()
     {
